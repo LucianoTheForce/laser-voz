@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LASER VOZ</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  canvas { display: block; position: fixed; inset: 0; }
+  #hud {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    transition: opacity .6s ease; z-index: 10; cursor: default;
+  }
+  #hud.hidden { opacity: 0; pointer-events: none; }
+  #micBtn {
+    background: #000; color: #fff; border: 1px solid #333;
+    padding: 14px 28px; font-family: inherit; font-size: 13px;
+    letter-spacing: 3px; cursor: pointer; text-transform: uppercase;
+  }
+  #micBtn.on { border-color: #0f0; color: #0f0; }
+  #status { color: #444; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
+  #lastCmd { color: #888; font-size: 12px; letter-spacing: 1px; min-height: 16px; }
+  #txt {
+    background: #000; border: 1px solid #222; color: #fff;
+    font-family: inherit; font-size: 12px; padding: 8px 12px; width: 320px;
+    letter-spacing: 1px; outline: none; text-align: center;
+  }
+  #txt:focus { border-color: #555; }
+  #help {
+    position: fixed; top: 20px; right: 20px; color: #333; font-size: 10px;
+    font-family: ui-monospace, monospace; letter-spacing: 1px; text-align: right;
+    line-height: 1.8; transition: opacity .6s; z-index: 10;
+  }
+  #help.hidden { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="help">
+  F fullscreen · clique = mostrar controles<br>
+  fale: túnel · círculo · onda · estrela · feixes · espiral · grade · scan · lissajous<br>
+  verde azul vermelho branco roxo ciano rosa amarelo · mais rápido · devagar · maior · menor · gira · para · limpa · aleatório
+</div>
+
+<div id="hud">
+  <div id="lastCmd"></div>
+  <button id="micBtn">🎙 ativar voz</button>
+  <input id="txt" placeholder="ou digite um comando + enter" />
+  <div id="status">parado</div>
+</div>
+
+<script>
+// ============ ESTADO ============
+const state = {
+  shape: 'tunel',
+  color: [0, 255, 80],      // rgb
+  speed: 1,
+  scale: 1,
+  spin: 0,                  // rad/s extra
+  running: true,
+  t: 0
+};
+
+const COLORS = {
+  'verde':    [0,255,80],
+  'azul':     [40,120,255],
+  'vermelho': [255,40,40],
+  'branco':   [255,255,255],
+  'roxo':     [180,60,255],
+  'ciano':    [0,230,255],
+  'rosa':     [255,60,180],
+  'amarelo':  [255,220,0],
+  'laranja':  [255,140,0]
+};
+
+const SHAPES = ['tunel','circulo','onda','estrela','feixes','espiral','grade','scan','lissajous'];
+
+// ============ CANVAS ============
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H, CX, CY;
+function resize() {
+  const d = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.width = innerWidth * d;
+  H = cv.height = innerHeight * d;
+  cv.style.width = innerWidth + 'px';
+  cv.style.height = innerHeight + 'px';
+  CX = W/2; CY = H/2;
+}
+addEventListener('resize', resize); resize();
+
+// traço laser: passada larga translúcida (halo) + passada fina sólida
+function laserStroke(path, alpha = 1) {
+  const [r,g,b] = state.color;
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
+  ctx.lineWidth = 10; ctx.stroke(path);
+  ctx.strokeStyle = `rgba(${r},${g},${b},${0.35*alpha})`;
+  ctx.lineWidth = 4; ctx.stroke(path);
+  ctx.strokeStyle = `rgba(${Math.min(r+120,255)},${Math.min(g+120,255)},${Math.min(b+120,255)},${alpha})`;
+  ctx.lineWidth = 1.4; ctx.stroke(path);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// ============ FORMAS ============
+const R = () => Math.min(W,H) * 0.38 * state.scale;
+
+const draw = {
+  tunel(t) {
+    const n = 9;
+    for (let i = 0; i < n; i++) {
+      const z = ((t*0.35 + i/n) % 1);
+      const r = z*z * R() * 2.2;
+      const p = new Path2D();
+      const rot = t*0.3 + state.spin*t + i*0.12;
+      const sides = 32;
+      for (let s = 0; s <= sides; s++) {
+        const a = rot + s/sides * Math.PI*2;
+        const x = CX + Math.cos(a)*r, y = CY + Math.sin(a)*r;
+        s===0 ? p.moveTo(x,y) : p.lineTo(x,y);
+      }
+      laserStroke(p, z*0.9 + 0.1);
+    }
+  },
+  circulo(t) {
+    for (let i = 0; i < 3; i++) {
+      const r = R() * (0.55 + 0.35*Math.sin(t*1.4 + i*2.1));
+      const p = new Path2D();
+      p.arc(CX, CY, Math.abs(r)+8, 0, Math.PI*2);
+      laserStroke(p, 0.9 - i*0.25);
+    }
+  },
+  onda(t) {
+    for (let k = 0; k < 3; k++) {
+      const p = new Path2D();
+      for (let x = 0; x <= W; x += 6) {
+        const y = CY + Math.sin(x*0.008 + t*2.4 + k*2) * R()*0.5 * Math.sin(t*0.5+k);
+        x===0 ? p.moveTo(x,y) : p.lineTo(x,y);
+      }
+      laserStroke(p, 1 - k*0.28);
+    }
+  },
+  estrela(t) {
+    const pts = 5, rot = t*0.6 + state.spin*t;
+    const p = new Path2D();
+    for (let i = 0; i <= pts*2; i++) {
+      const a = rot + i/(pts*2) * Math.PI*2 - Math.PI/2;
+      const r = (i%2===0 ? R() : R()*0.42);
+      const x = CX + Math.cos(a)*r, y = CY + Math.sin(a)*r;
+      i===0 ? p.moveTo(x,y) : p.lineTo(x,y);
+    }
+    p.closePath();
+    laserStroke(p, 1);
+  },
+  feixes(t) {
+    const n = 14;
+    for (let i = 0; i < n; i++) {
+      const a = i/n * Math.PI*2 + t*0.5 + state.spin*t;
+      const len = R()*2.4 * (0.6 + 0.4*Math.sin(t*3 + i));
+      const p = new Path2D();
+      p.moveTo(CX, CY);
+      p.lineTo(CX + Math.cos(a)*len, CY + Math.sin(a)*len);
+      laserStroke(p, 0.8);
+    }
+  },
+  espiral(t) {
+    const p = new Path2D();
+    const turns = 5, rot = t*0.8 + state.spin*t;
+    for (let i = 0; i <= 400; i++) {
+      const f = i/400;
+      const a = rot + f * turns * Math.PI*2;
+      const r = f * R()*1.3;
+      const x = CX + Math.cos(a)*r, y = CY + Math.sin(a)*r;
+      i===0 ? p.moveTo(x,y) : p.lineTo(x,y);
+    }
+    laserStroke(p, 1);
+  },
+  grade(t) {
+    const step = 90 * state.scale;
+    const off = (t*60) % step;
+    const p = new Path2D();
+    for (let x = -step+off; x < W+step; x += step) { p.moveTo(x,0); p.lineTo(x,H); }
+    for (let y = -step+off; y < H+step; y += step) { p.moveTo(0,y); p.lineTo(W,y); }
+    laserStroke(p, 0.6);
+  },
+  scan(t) {
+    for (let k = 0; k < 3; k++) {
+      const y = ((t*0.25 + k/3) % 1) * H;
+      const p = new Path2D();
+      p.moveTo(0,y); p.lineTo(W,y);
+      laserStroke(p, 0.9);
+    }
+  },
+  lissajous(t) {
+    const p = new Path2D();
+    const A = 3 + Math.floor(Math.abs(Math.sin(t*0.1))*3), B = A+1;
+    for (let i = 0; i <= 600; i++) {
+      const f = i/600 * Math.PI*2;
+      const x = CX + Math.sin(A*f + t) * R()*1.2;
+      const y = CY + Math.sin(B*f) * R()*0.85;
+      i===0 ? p.moveTo(x,y) : p.lineTo(x,y);
+    }
+    laserStroke(p, 1);
+  }
+};
+
+// ============ LOOP ============
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last)/1000, 0.05);
+  last = now;
+  if (state.running) state.t += dt * state.speed;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,W,H);
+  (draw[state.shape] || draw.tunel)(state.t);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ============ PARSER DE COMANDOS ============
+const ALIASES = {
+  'túnel':'tunel','tunel':'tunel',
+  'círculo':'circulo','circulo':'circulo','circulos':'circulo','círculos':'circulo',
+  'onda':'onda','ondas':'onda',
+  'estrela':'estrela','estrelas':'estrela',
+  'feixe':'feixes','feixes':'feixes','raios':'feixes','raio':'feixes',
+  'espiral':'espiral',
+  'grade':'grade','grid':'grade',
+  'scan':'scan','linha':'scan','linhas':'scan','varredura':'scan',
+  'lissajous':'lissajous','curva':'lissajous','curvas':'lissajous'
+};
+
+function applyCommand(text) {
+  const t = text.toLowerCase();
+  let hit = false;
+
+  for (const [word, shape] of Object.entries(ALIASES)) {
+    if (t.includes(word)) { state.shape = shape; hit = true; break; }
+  }
+  for (const [name, rgb] of Object.entries(COLORS)) {
+    if (t.includes(name)) { state.color = rgb; hit = true; }
+  }
+  if (/mais r[aá]pid|acelera|r[aá]pido/.test(t)) { state.speed = Math.min(state.speed*1.6, 8); hit = true; }
+  if (/devagar|mais lent|lento|calma/.test(t))   { state.speed = Math.max(state.speed/1.6, 0.1); hit = true; }
+  if (/maior|aumenta|grande/.test(t))            { state.scale = Math.min(state.scale*1.3, 3); hit = true; }
+  if (/menor|diminui|pequen/.test(t))            { state.scale = Math.max(state.scale/1.3, 0.2); hit = true; }
+  if (/\bgira|girando|rota/.test(t))             { state.spin = state.spin ? 0 : 1.2; hit = true; }
+  if (/\bpara\b|pausa|congela/.test(t))          { state.running = false; hit = true; }
+  if (/continua|volta|play|vai\b/.test(t))       { state.running = true; hit = true; }
+  if (/limpa|reset|zera/.test(t)) {
+    Object.assign(state, {speed:1, scale:1, spin:0, running:true}); hit = true;
+  }
+  if (/aleat[oó]ri|surpre|pr[oó]xim|muda/.test(t)) {
+    state.shape = SHAPES[Math.floor(Math.random()*SHAPES.length)];
+    const cs = Object.values(COLORS);
+    state.color = cs[Math.floor(Math.random()*cs.length)];
+    hit = true;
+  }
+  return hit;
+}
+
+// ============ VOZ ============
+const micBtn = document.getElementById('micBtn');
+const statusEl = document.getElementById('status');
+const lastCmdEl = document.getElementById('lastCmd');
+const hud = document.getElementById('hud');
+const help = document.getElementById('help');
+const txt = document.getElementById('txt');
+let rec = null, listening = false;
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function startVoice() {
+  if (!SR) { statusEl.textContent = 'voz não suportada aqui · use o campo de texto (chrome desktop tem voz)'; return; }
+  rec = new SR();
+  rec.lang = 'pt-BR';
+  rec.continuous = true;
+  rec.interimResults = false;
+  rec.onresult = (e) => {
+    const said = e.results[e.results.length-1][0].transcript.trim();
+    const ok = applyCommand(said);
+    lastCmdEl.textContent = (ok ? '✓ ' : '· ') + said;
+    lastCmdEl.style.color = ok ? '#0f0' : '#555';
+  };
+  rec.onend = () => { if (listening) try { rec.start(); } catch(e){} };
+  rec.onerror = (e) => { statusEl.textContent = 'erro: ' + e.error; };
+  try {
+    rec.start();
+    listening = true;
+    micBtn.classList.add('on');
+    micBtn.textContent = '🎙 ouvindo';
+    statusEl.textContent = 'fale um comando';
+    scheduleHide();
+  } catch(e) { statusEl.textContent = 'erro ao iniciar mic'; }
+}
+
+function stopVoice() {
+  listening = false;
+  if (rec) rec.stop();
+  micBtn.classList.remove('on');
+  micBtn.textContent = '🎙 ativar voz';
+  statusEl.textContent = 'parado';
+}
+
+micBtn.onclick = () => listening ? stopVoice() : startVoice();
+
+txt.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && txt.value.trim()) {
+    const ok = applyCommand(txt.value);
+    lastCmdEl.textContent = (ok ? '✓ ' : '· ') + txt.value;
+    lastCmdEl.style.color = ok ? '#0f0' : '#555';
+    txt.value = '';
+    scheduleHide();
+  }
+  e.stopPropagation();
+});
+
+// ============ UI AUTO-HIDE / FULLSCREEN ============
+let hideTimer;
+function scheduleHide() {
+  clearTimeout(hideTimer);
+  hud.classList.remove('hidden'); help.classList.remove('hidden');
+  hideTimer = setTimeout(() => {
+    if (document.activeElement !== txt) { hud.classList.add('hidden'); help.classList.add('hidden'); }
+  }, 5000);
+}
+addEventListener('pointerdown', scheduleHide);
+addEventListener('pointermove', scheduleHide);
+scheduleHide();
+
+addEventListener('keydown', (e) => {
+  if (document.activeElement === txt) return;
+  if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  }
+});
+</script>
+</body>
+</html>
