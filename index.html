@@ -35,13 +35,24 @@
     line-height: 1.8; transition: opacity .6s; z-index: 10;
   }
   #help.hidden { opacity: 0; }
+  #shapeName {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    text-align: center; pointer-events: none; z-index: 20;
+    opacity: 0; transition: opacity .4s ease;
+  }
+  #shapeName .big { font-size: clamp(40px, 10vw, 110px); letter-spacing: 8px; color: #fff; font-weight: 700; }
+  #shapeName .say { font-size: clamp(12px, 3vw, 18px); letter-spacing: 3px; color: #888; margin-top: 8px; }
+  #shapeName.show { opacity: 1; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 
+<div id="shapeName"><div class="big"></div><div class="say"></div></div>
+
 <div id="help">
-  F fullscreen · clique = mostrar controles<br>
+  toque na tela = próxima forma · F fullscreen<br>
   fale: túnel · círculo · onda · estrela · feixes · espiral · grade · scan · lissajous<br>
   verde azul vermelho branco roxo ciano rosa amarelo · mais rápido · devagar · maior · menor · gira · para · limpa · aleatório
 </div>
@@ -78,6 +89,29 @@ const COLORS = {
 };
 
 const SHAPES = ['tunel','circulo','onda','estrela','feixes','espiral','grade','scan','lissajous'];
+
+const SAY = {
+  tunel:     ['TÚNEL',     'fale: "túnel"'],
+  circulo:   ['CÍRCULO',   'fale: "círculo"'],
+  onda:      ['ONDA',      'fale: "onda"'],
+  estrela:   ['ESTRELA',   'fale: "estrela"'],
+  feixes:    ['FEIXES',    'fale: "feixes" ou "raios"'],
+  espiral:   ['ESPIRAL',   'fale: "espiral"'],
+  grade:     ['GRADE',     'fale: "grade"'],
+  scan:      ['SCAN',      'fale: "scan" ou "linhas"'],
+  lissajous: ['LISSAJOUS', 'fale: "lissajous" ou "curvas"']
+};
+
+const shapeNameEl = document.getElementById('shapeName');
+let nameTimer;
+function showShapeName(shape) {
+  const [big, say] = SAY[shape] || [shape.toUpperCase(), ''];
+  shapeNameEl.querySelector('.big').textContent = big;
+  shapeNameEl.querySelector('.say').textContent = say;
+  shapeNameEl.classList.add('show');
+  clearTimeout(nameTimer);
+  nameTimer = setTimeout(() => shapeNameEl.classList.remove('show'), 1600);
+}
 
 // ============ CANVAS ============
 const cv = document.getElementById('c');
@@ -241,7 +275,7 @@ function applyCommand(text) {
   let hit = false;
 
   for (const [word, shape] of Object.entries(ALIASES)) {
-    if (t.includes(word)) { state.shape = shape; hit = true; break; }
+    if (t.includes(word)) { state.shape = shape; showShapeName(shape); hit = true; break; }
   }
   for (const [name, rgb] of Object.entries(COLORS)) {
     if (t.includes(name)) { state.color = rgb; hit = true; }
@@ -260,6 +294,7 @@ function applyCommand(text) {
     state.shape = SHAPES[Math.floor(Math.random()*SHAPES.length)];
     const cs = Object.values(COLORS);
     state.color = cs[Math.floor(Math.random()*cs.length)];
+    showShapeName(state.shape);
     hit = true;
   }
   return hit;
@@ -333,6 +368,16 @@ function scheduleHide() {
 addEventListener('pointerdown', scheduleHide);
 addEventListener('pointermove', scheduleHide);
 scheduleHide();
+
+// toque na tela (fora do HUD) = próxima forma
+cv.addEventListener('pointerdown', () => {
+  const i = SHAPES.indexOf(state.shape);
+  state.shape = SHAPES[(i + 1) % SHAPES.length];
+  showShapeName(state.shape);
+});
+
+// mostra o nome da forma inicial ao abrir
+showShapeName(state.shape);
 
 addEventListener('keydown', (e) => {
   if (document.activeElement === txt) return;
