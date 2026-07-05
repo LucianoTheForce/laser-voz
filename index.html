@@ -59,7 +59,7 @@
 
 <div id="hud">
   <div id="lastCmd"></div>
-  <button id="micBtn">🎙 ativar voz</button>
+  <button id="micBtn">🎙 ativar mic (voz + áudio-reativo)</button>
   <input id="txt" placeholder="ou digite um comando + enter" />
   <div id="status">parado</div>
 </div>
@@ -75,6 +75,9 @@ const state = {
   running: true,
   t: 0
 };
+
+// áudio-reatividade
+const audio = { on: false, level: 0, bass: 0, smooth: 0, analyser: null, data: null };
 
 const COLORS = {
   'verde':    [0,255,80],
@@ -142,7 +145,7 @@ function laserStroke(path, alpha = 1) {
 }
 
 // ============ FORMAS ============
-const R = () => Math.min(W,H) * 0.38 * state.scale;
+const R = () => Math.min(W,H) * 0.38 * state.scale * (1 + audio.smooth * 0.7);
 
 const draw = {
   tunel(t) {
@@ -248,11 +251,37 @@ let last = performance.now();
 function frame(now) {
   const dt = Math.min((now - last)/1000, 0.05);
   last = now;
-  if (state.running) state.t += dt * state.speed;
+
+  // análise de áudio
+  if (audio.on && audio.analyser) {
+    audio.analyser.getByteFrequencyData(audio.data);
+    let sum = 0, bassSum = 0;
+    const n = audio.data.length, bassN = Math.floor(n * 0.1);
+    for (let i = 0; i < n; i++) {
+      sum += audio.data[i];
+      if (i < bassN) bassSum += audio.data[i];
+    }
+    audio.level = sum / n / 255;
+    audio.bass  = bassSum / bassN / 255;
+    const target = Math.min(audio.bass * 1.6 + audio.level * 0.4, 1.4);
+    // ataque rápido, decaimento lento = pulso musical
+    audio.smooth += (target - audio.smooth) * (target > audio.smooth ? 0.5 : 0.08);
+  } else {
+    audio.smooth *= 0.95;
+  }
+
+  if (state.running) state.t += dt * state.speed * (1 + audio.smooth * 1.2);
   ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = '#000';
   ctx.fillRect(0,0,W,H);
   (draw[state.shape] || draw.tunel)(state.t);
+
+  // barrinha de nível (só quando HUD visível)
+  if (audio.on && !hud.classList.contains('hidden')) {
+    const [r,g,b] = state.color;
+    ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
+    ctx.fillRect(20, H - 26, audio.level * 200 * (window.devicePixelRatio||1), 6);
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -311,8 +340,38 @@ let rec = null, listening = false;
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-function startVoice() {
-  if (!SR) { statusEl.textContent = 'voz não suportada aqui · use o campo de texto (chrome desktop tem voz)'; return; }
+async function startAudio() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') await actx.resume();
+    const src = actx.createMediaStreamSource(stream);
+    audio.analyser = actx.createAnalyser();
+    audio.analyser.fftSize = 512;
+    audio.analyser.smoothingTimeConstant = 0.6;
+    audio.data = new Uint8Array(audio.analyser.frequencyBinCount);
+    src.connect(audio.analyser);
+    audio.on = true;
+    return true;
+  } catch(e) {
+    statusEl.textContent = 'mic negado: ' + e.name;
+    return false;
+  }
+}
+
+async function startVoice() {
+  const audioOk = await startAudio();  // áudio-reativo funciona em qualquer navegador
+
+  if (!SR) {
+    if (audioOk) {
+      listening = true;
+      micBtn.classList.add('on');
+      micBtn.textContent = '🔊 áudio-reativo';
+      statusEl.textContent = 'sem voz neste navegador · use toque ou texto';
+      scheduleHide();
+    }
+    return;
+  }
   rec = new SR();
   rec.lang = 'pt-BR';
   rec.continuous = true;
@@ -322,14 +381,16 @@ function startVoice() {
     const ok = applyCommand(said);
     lastCmdEl.textContent = (ok ? '✓ ' : '· ') + said;
     lastCmdEl.style.color = ok ? '#0f0' : '#555';
+    hud.classList.remove('hidden');
+    scheduleHide();
   };
   rec.onend = () => { if (listening) try { rec.start(); } catch(e){} };
-  rec.onerror = (e) => { statusEl.textContent = 'erro: ' + e.error; };
+  rec.onerror = (e) => { statusEl.textContent = 'erro voz: ' + e.error; };
   try {
     rec.start();
     listening = true;
     micBtn.classList.add('on');
-    micBtn.textContent = '🎙 ouvindo';
+    micBtn.textContent = '🎙 ouvindo + áudio-reativo';
     statusEl.textContent = 'fale um comando';
     scheduleHide();
   } catch(e) { statusEl.textContent = 'erro ao iniciar mic'; }
