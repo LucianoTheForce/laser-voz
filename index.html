@@ -21,7 +21,7 @@
     transition: opacity .6s ease; z-index: 10; cursor: default;
   }
   #hud.hidden { opacity: 0; pointer-events: none; }
-  #micBtn, #synthBtn, #fsBtn, #hostBtn, #qrBtn {
+  #micBtn, #synthBtn, #fsBtn, #hostBtn, #qrBtn, #waBtn {
     background: #000; color: #fff; border: 1px solid #333;
     padding: 14px 28px; font-family: inherit; font-size: 13px;
     letter-spacing: 3px; cursor: pointer; text-transform: uppercase;
@@ -94,6 +94,7 @@
   <div id="roomEl" style="color:#0f0;font-size:14px;letter-spacing:4px"></div>
   <button id="hostBtn">📺 criar sala (telão)</button>
   <button id="qrBtn" style="display:none">▦ mostrar QR</button>
+  <button id="waBtn" style="display:none">🟢 mandar link no whatsapp</button>
   <input id="joinInput" placeholder="código da sala + enter (entrar como controle)" />
   <button id="fsBtn">⛶ tela cheia</button>
   <button id="synthBtn">🔊 ligar synth</button>
@@ -192,9 +193,12 @@ function grad(alpha, light) {
 
 // cor forçada por player (multiplayer): hue fixo por jogador
 let overrideHue = null;
+// atenuação global (formas de fundo vs pinceladas)
+let strokeDim = 1;
 
 // traço laser: passada larga translúcida (halo) + passada fina sólida
 function laserStroke(path, alpha = 1) {
+  alpha *= strokeDim;
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   if (overrideHue !== null) {
@@ -416,18 +420,26 @@ function frame(now) {
   // gradiente gira: base lenta, áudio empurra
   state.hue = (state.hue + dt * (18 + audio.smooth * 220 + audio.bass * 120)) % 360;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#000';
+  // aquarela: nada limpa de vez, tudo derrete — som alto = rastro mais longo
+  ctx.fillStyle = `rgba(0,0,0,${Math.max(0.045, 0.13 - audio.smooth * 0.07)})`;
   ctx.fillRect(0,0,W,H);
+  strokeDim = 0.5;                       // formas base mais sutis, tipo lavagem de fundo
   (draw[state.shape] || draw.tunel)(state.t);
+  strokeDim = 1;
+
+  // pinceladas de todo mundo (aquarela sonora)
+  drawBrushes(dt);
 
   // telão: camada visual de cada player com a cor dele
   if (mp.role === 'host') {
+    strokeDim = 0.5;
     for (const id in mp.players) {
       const p = mp.players[id];
       overrideHue = p.hue;
       (draw[p.shape] || draw.circulo)(state.t + p.idx * 0.9);
       overrideHue = null;
     }
+    strokeDim = 1;
     const now = performance.now();
     mp.ripples = mp.ripples.filter(r => now - r.born < 900);
     for (const r of mp.ripples) {
@@ -756,6 +768,56 @@ function hueToRgb(h) {
   return [f(0), f(8), f(4)];
 }
 
+function rgbToHue([r,g,b]) {
+  r/=255; g/=255; b/=255;
+  const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+  if (mx === mn) return 0;
+  let h;
+  if (mx === r) h = ((g-b)/(mx-mn)) % 6;
+  else if (mx === g) h = (b-r)/(mx-mn) + 2;
+  else h = (r-g)/(mx-mn) + 4;
+  return ((h*60)+360) % 360;
+}
+
+// ============ PINCELADAS (aquarela sonora) ============
+const BRUSH_LIFE = 3000;
+const brushes = new Map();  // key -> {pts:[{x,y,t}], hue}
+
+function brushPoint(key, x, y, hue) {
+  let b = brushes.get(key);
+  if (!b) { b = { pts: [], hue }; brushes.set(key, b); }
+  b.hue = hue;
+  const lp = b.pts[b.pts.length - 1];
+  if (lp && Math.hypot(x - lp.x, y - lp.y) < 0.004) return;
+  b.pts.push({ x, y, t: performance.now() });
+  if (b.pts.length > 120) b.pts.shift();
+}
+
+function drawBrushes(dt) {
+  const now = performance.now();
+  for (const [key, b] of brushes) {
+    b.pts = b.pts.filter(p => now - p.t < BRUSH_LIFE);
+    if (b.pts.length < 2) { if (!b.pts.length) brushes.delete(key); continue; }
+    // deriva: campo de fluxo suave — a pincelada escorre
+    for (const p of b.pts) {
+      const a = Math.sin(p.x * 5.3 + state.t * 0.6) + Math.cos(p.y * 5.3 - state.t * 0.45);
+      const drift = (0.015 + audio.smooth * 0.03) * dt;
+      p.x += Math.cos(a * Math.PI) * drift;
+      p.y += Math.sin(a * Math.PI) * drift;
+    }
+    overrideHue = b.hue;
+    for (let i = 1; i < b.pts.length; i++) {
+      const p0 = b.pts[i-1], p1 = b.pts[i];
+      const age = (now - p1.t) / BRUSH_LIFE;
+      const path = new Path2D();
+      path.moveTo(p0.x * W, p0.y * H);
+      path.lineTo(p1.x * W, p1.y * H);
+      laserStroke(path, (1 - age) * 0.9);
+    }
+    overrideHue = null;
+  }
+}
+
 function showQr() {
   if (!mp.code) return;
   const url = location.origin + location.pathname + '?s=' + mp.code;
@@ -780,6 +842,7 @@ function hostRoom() {
     hostBtn.textContent = '📺 sala ' + code;
     statusEl.textContent = 'celulares: escanear o QR ou abrir ?s=' + code;
     qrBtn.style.display = '';
+    waBtn.style.display = '';
     if (!synth.on) startSynth();
     showQr();
   });
@@ -787,17 +850,28 @@ function hostRoom() {
     c.on('open', () => {
       const idx = mp.nextIdx++;
       const hue = (idx * 67) % 360;
-      mp.players[c.peer] = { idx, hue, shape: SHAPES[idx % (SHAPES.length - 1)], conn: c };
+      mp.players[c.peer] = { idx, hue, shape: SHAPES[idx % (SHAPES.length - 1)], conn: c, lastNote: -1 };
       c.send({ t: 'hi', idx, hue });
       statusEl.textContent = 'player ' + idx + ' entrou';
     });
     c.on('data', (d) => {
       const p = mp.players[c.peer]; if (!p || !d) return;
-      if (d.t === 'n') {
+      if (d.t === 'm') {
+        // movimento contínuo = pincelada; nota toca quando muda de "tecla"
+        brushPoint('p' + p.idx, d.x, d.y, p.hue);
+        const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
+        if (i !== p.lastNote) {
+          p.lastNote = i;
+          const cut = 400 + (1 - d.y) * 5000;
+          playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.4, gain: 0.24, cut });
+          mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
+        }
+      } else if (d.t === 'n') {
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         const cut = 400 + (1 - d.y) * 5000;
         playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.35, gain: 0.26, cut });
         mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
+        brushPoint('p' + p.idx, d.x, d.y, p.hue);
       } else if (d.t === 's') {
         p.shape = d.s;
       }
@@ -951,6 +1025,13 @@ qrBtn.onclick = () => {
   box.classList.contains('show') ? hideQr() : showQr();
 };
 document.getElementById('qrBox').addEventListener('pointerdown', (e) => { hideQr(); e.stopPropagation(); });
+const waBtn = document.getElementById('waBtn');
+waBtn.onclick = () => {
+  if (!mp.code) return;
+  const url = location.origin + location.pathname + '?s=' + mp.code;
+  const msg = '🔊 entra na sala ' + mp.code + ' pra tocar junto: ' + url;
+  window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
+};
 joinInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && joinInput.value.trim().length >= 4) {
     joinRoom(joinInput.value.trim());
@@ -1030,14 +1111,28 @@ function goFullscreen() {
 
 const pointers = new Map();  // pointerId -> {x, y, sx, sy, t0, moved, lastNote}
 
-function fingerNote(p) {
-  const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(p.x / innerWidth * SCALE.length)));
+function localHue() {
+  return state.gradient ? state.hue : rgbToHue(state.color);
+}
+
+function fingerNote(p, pid) {
+  const nx = p.x / innerWidth, ny = p.y / innerHeight;
+  if (mp.role === 'player' && mp.conn && mp.conn.open) {
+    const now = performance.now();
+    if (!p.lastSend || now - p.lastSend > 40) {
+      p.lastSend = now;
+      mp.conn.send({ t: 'm', x: nx, y: ny });
+    }
+    brushPoint('me' + pid, nx, ny, mp.hue != null ? mp.hue : localHue());  // preview local
+    return;
+  }
+  // host / solo: pincelada + nota
+  brushPoint('l' + pid, nx, ny, localHue());
+  const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(nx * SCALE.length)));
   if (idx === p.lastNote) return;
   p.lastNote = idx;
-  if (mp.role === 'player' && mp.conn && mp.conn.open) {
-    mp.conn.send({ t: 'n', x: p.x / innerWidth, y: p.y / innerHeight });
-  } else if (synth.on) {
-    const cut = 400 + (1 - p.y / innerHeight) * 5000;
+  if (synth.on) {
+    const cut = 400 + (1 - ny) * 5000;
     playNote(SCALE[idx], { dur: 0.35, gain: 0.28, cut });
   }
 }
@@ -1061,7 +1156,7 @@ cv.addEventListener('pointermove', (e) => {
   p.x = e.clientX; p.y = e.clientY;
   if (!p.moved && Math.hypot(p.x - p.sx, p.y - p.sy) < 8) return;
   if (!p.moved) { p.moved = true; clearTimeout(holdTimer); }
-  fingerNote(p);
+  fingerNote(p, e.pointerId);
 });
 
 function endPointer(e, allowTap) {
