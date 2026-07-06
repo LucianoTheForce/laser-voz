@@ -19,7 +19,7 @@
     transition: opacity .6s ease; z-index: 10; cursor: default;
   }
   #hud.hidden { opacity: 0; pointer-events: none; }
-  #micBtn, #synthBtn {
+  #micBtn, #synthBtn, #fsBtn {
     background: #000; color: #fff; border: 1px solid #333;
     padding: 14px 28px; font-family: inherit; font-size: 13px;
     letter-spacing: 3px; cursor: pointer; text-transform: uppercase;
@@ -68,6 +68,7 @@
 
 <div id="hud">
   <div id="lastCmd"></div>
+  <button id="fsBtn">⛶ tela cheia</button>
   <button id="synthBtn">🔊 ligar synth</button>
   <button id="micBtn">🎙 ativar mic (voz + áudio-reativo)</button>
   <input id="txt" placeholder="digite ou use o 🎙 do teclado do iPhone + enter" />
@@ -789,6 +790,24 @@ function stopVoice() {
 micBtn.onclick = () => listening ? stopVoice() : startVoice();
 const synthBtn = document.getElementById('synthBtn');
 synthBtn.onclick = () => synth.on ? stopSynth() : startSynth();
+const fsBtn = document.getElementById('fsBtn');
+fsBtn.onclick = () => {
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else if (fn) {
+    try { fn.call(el); } catch(e) {}
+    // iPhone Safari não tem fullscreen de página
+    setTimeout(() => {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        statusEl.textContent = 'no iphone: compartilhar → adicionar à tela de início';
+      }
+    }, 400);
+  } else {
+    statusEl.textContent = 'no iphone: compartilhar → adicionar à tela de início';
+  }
+};
 
 txt.addEventListener('input', () => {
   // ditado nativo do iPhone/teclado: mostra ao vivo no modo texto
