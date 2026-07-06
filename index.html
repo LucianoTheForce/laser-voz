@@ -9,6 +9,7 @@
 <meta name="theme-color" content="#000000">
 <title>LASER VOZ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; overscroll-behavior: none; }
@@ -20,7 +21,7 @@
     transition: opacity .6s ease; z-index: 10; cursor: default;
   }
   #hud.hidden { opacity: 0; pointer-events: none; }
-  #micBtn, #synthBtn, #fsBtn, #hostBtn {
+  #micBtn, #synthBtn, #fsBtn, #hostBtn, #qrBtn {
     background: #000; color: #fff; border: 1px solid #333;
     padding: 14px 28px; font-family: inherit; font-size: 13px;
     letter-spacing: 3px; cursor: pointer; text-transform: uppercase;
@@ -59,12 +60,28 @@
   #shapeName .big { font-size: clamp(40px, 10vw, 110px); letter-spacing: 8px; color: #fff; font-weight: 700; }
   #shapeName .say { font-size: clamp(12px, 3vw, 18px); letter-spacing: 3px; color: #888; margin-top: 8px; }
   #shapeName.show { opacity: 1; }
+  #qrBox {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    background: #fff; padding: 28px 28px 18px; display: none;
+    flex-direction: column; align-items: center; gap: 14px;
+    z-index: 30; cursor: default;
+  }
+  #qrBox.show { display: flex; }
+  #qrLabel {
+    font-family: ui-monospace, monospace; font-size: 20px;
+    letter-spacing: 6px; color: #000; font-weight: 700;
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 
 <div id="shapeName"><div class="big"></div><div class="say"></div></div>
+
+<div id="qrBox">
+  <div id="qrCode"></div>
+  <div id="qrLabel"></div>
+</div>
 
 <div id="help" style="display:none">
   tap = próxima forma · arrastar o dedo = tocar o synth (X nota · Y brilho) · F fullscreen<br>
@@ -76,6 +93,7 @@
   <div id="lastCmd"></div>
   <div id="roomEl" style="color:#0f0;font-size:14px;letter-spacing:4px"></div>
   <button id="hostBtn">📺 criar sala (telão)</button>
+  <button id="qrBtn" style="display:none">▦ mostrar QR</button>
   <input id="joinInput" placeholder="código da sala + enter (entrar como controle)" />
   <button id="fsBtn">⛶ tela cheia</button>
   <button id="synthBtn">🔊 ligar synth</button>
@@ -738,6 +756,19 @@ function hueToRgb(h) {
   return [f(0), f(8), f(4)];
 }
 
+function showQr() {
+  if (!mp.code) return;
+  const url = location.origin + location.pathname + '?s=' + mp.code;
+  const box = document.getElementById('qrCode');
+  box.innerHTML = '';
+  if (typeof QRCode !== 'undefined') {
+    new QRCode(box, { text: url, width: Math.min(innerHeight*0.5, 420), height: Math.min(innerHeight*0.5, 420), correctLevel: QRCode.CorrectLevel.M });
+  }
+  document.getElementById('qrLabel').textContent = 'SALA ' + mp.code;
+  document.getElementById('qrBox').classList.add('show');
+}
+function hideQr() { document.getElementById('qrBox').classList.remove('show'); }
+
 function hostRoom() {
   if (mp.peer || typeof Peer === 'undefined') return;
   const code = randCode();
@@ -747,8 +778,10 @@ function hostRoom() {
     roomEl.textContent = 'SALA: ' + code + ' · link: ' + location.origin + location.pathname + '?s=' + code;
     hostBtn.classList.add('on');
     hostBtn.textContent = '📺 sala ' + code;
-    statusEl.textContent = 'celulares: abrir o link com ?s=' + code + ' ou digitar o código';
+    statusEl.textContent = 'celulares: escanear o QR ou abrir ?s=' + code;
+    qrBtn.style.display = '';
     if (!synth.on) startSynth();
+    showQr();
   });
   mp.peer.on('connection', (c) => {
     c.on('open', () => {
@@ -912,6 +945,12 @@ const roomEl = document.getElementById('roomEl');
 const hostBtn = document.getElementById('hostBtn');
 const joinInput = document.getElementById('joinInput');
 hostBtn.onclick = () => hostRoom();
+const qrBtn = document.getElementById('qrBtn');
+qrBtn.onclick = () => {
+  const box = document.getElementById('qrBox');
+  box.classList.contains('show') ? hideQr() : showQr();
+};
+document.getElementById('qrBox').addEventListener('pointerdown', (e) => { hideQr(); e.stopPropagation(); });
 joinInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && joinInput.value.trim().length >= 4) {
     joinRoom(joinInput.value.trim());
@@ -1005,6 +1044,7 @@ function fingerNote(p) {
 
 cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  if (document.getElementById('qrBox').classList.contains('show')) hideQr();
   try { cv.setPointerCapture(e.pointerId); } catch(err) {}
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t0: performance.now(), moved: false, lastNote: -1 });
   if (pointers.size === 1) {
