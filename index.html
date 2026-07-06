@@ -108,6 +108,7 @@
 // ============ ESTADO ============
 const state = {
   shape: 'tunel',
+  theme: 0,                 // 0 laser · 1 chrome · 2 tinta
   color: [0, 255, 80],      // rgb (cor fixa)
   gradient: true,           // gradiente colorido áudio-reativo
   hue: 120,
@@ -196,11 +197,43 @@ let overrideHue = null;
 // atenuação global (formas de fundo vs pinceladas)
 let strokeDim = 1;
 
-// traço laser: passada larga translúcida (halo) + passada fina sólida
+const THEMES = ['laser', 'chrome', 'tinta'];
+
+// traço laser: render muda conforme o tema
 function laserStroke(path, alpha = 1, w = 1) {
   alpha *= strokeDim;
-  ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  if (state.theme === 1) {
+    // CHROME: aberração cromática, o grave abre o split RGB
+    const off = (1.5 + audio.bass * 12) * (W / innerWidth);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.save(); ctx.translate(off, 0);
+    ctx.strokeStyle = `rgba(255,0,70,${0.65*alpha})`; ctx.lineWidth = 1.8*w; ctx.stroke(path);
+    ctx.restore();
+    ctx.save(); ctx.translate(-off, 0);
+    ctx.strokeStyle = `rgba(0,220,255,${0.65*alpha})`; ctx.lineWidth = 1.8*w; ctx.stroke(path);
+    ctx.restore();
+    const core = overrideHue !== null ? `hsla(${overrideHue},90%,85%,${alpha})` : `rgba(255,255,255,${alpha})`;
+    ctx.strokeStyle = core; ctx.lineWidth = 1.3*w; ctx.stroke(path);
+    ctx.globalCompositeOperation = 'source-over';
+    return;
+  }
+
+  if (state.theme === 2) {
+    // TINTA: nanquim escuro sobre fundo claro
+    ctx.globalCompositeOperation = 'multiply';
+    const h = overrideHue !== null ? overrideHue : (state.gradient ? state.hue : rgbToHue(state.color));
+    ctx.strokeStyle = `hsla(${h},75%,38%,${0.22*alpha})`;
+    ctx.lineWidth = (9 + audio.smooth*6) * w; ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},80%,20%,${0.85*alpha})`;
+    ctx.lineWidth = 2.4*w; ctx.stroke(path);
+    ctx.globalCompositeOperation = 'source-over';
+    return;
+  }
+
+  // LASER (aquarela luminosa)
+  ctx.globalCompositeOperation = 'lighter';
   if (overrideHue !== null) {
     const h = overrideHue;
     ctx.strokeStyle = `hsla(${h},95%,55%,${0.12*alpha})`; ctx.lineWidth = 10*w;  ctx.stroke(path);
@@ -420,13 +453,25 @@ function frame(now) {
   // gradiente gira: base lenta, áudio empurra
   state.hue = (state.hue + dt * (18 + audio.smooth * 220 + audio.bass * 120)) % 360;
   ctx.globalCompositeOperation = 'source-over';
-  // aquarela: nada limpa de vez, tudo derrete — som alto = rastro mais longo
-  ctx.fillStyle = `rgba(0,0,0,${Math.max(0.045, 0.13 - audio.smooth * 0.07)})`;
-  ctx.fillRect(0,0,W,H);
+  if (state.theme === 1) {
+    // CHROME: nítido, sem rastro
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,W,H);
+  } else if (state.theme === 2) {
+    // TINTA: papel branco, rastro curto
+    ctx.fillStyle = `rgba(255,255,255,${Math.max(0.06, 0.14 - audio.smooth * 0.06)})`;
+    ctx.fillRect(0,0,W,H);
+  } else {
+    // LASER aquarela: nada limpa de vez, tudo derrete — som alto = rastro mais longo
+    ctx.fillStyle = `rgba(0,0,0,${Math.max(0.045, 0.13 - audio.smooth * 0.07)})`;
+    ctx.fillRect(0,0,W,H);
+  }
   strokeDim = 0.5;                       // formas base mais sutis, tipo lavagem de fundo
   const syncd = (mp.role === 'player' && mp.sync);
   const baseShape = syncd ? mp.sync.base : state.shape;
+  if (gyro.ok) { ctx.save(); ctx.translate(gyro.a * W * 0.06, gyro.b * H * 0.04); }
   (draw[baseShape] || draw.tunel)(state.t);
+  if (gyro.ok) ctx.restore();
   strokeDim = 1;
 
   // pinceladas de todo mundo (aquarela sonora)
@@ -435,12 +480,16 @@ function frame(now) {
   // camada visual de cada player com a cor dele (todas as telas iguais)
   const layer = mp.role === 'host'
     ? Object.values(mp.players)
-    : (syncd && mp.sync.pl ? mp.sync.pl.map(o => ({ idx: o.i, hue: o.h, shape: o.s })) : []);
+    : (syncd && mp.sync.pl ? mp.sync.pl.map(o => ({ idx: o.i, hue: o.h, shape: o.s, tilt: { a: o.ta || 0, b: o.tb || 0 } })) : []);
   if (layer.length) {
     strokeDim = 0.5;
     for (const p of layer) {
       overrideHue = p.hue;
+      const tl = p.tilt || { a: 0, b: 0 };
+      ctx.save();
+      ctx.translate(tl.a * W * 0.12, tl.b * H * 0.08);
       (draw[p.shape] || draw.circulo)(state.t + p.idx * 0.9);
+      ctx.restore();
       overrideHue = null;
     }
     strokeDim = 1;
@@ -825,15 +874,16 @@ function drawBrushes(dt) {
     overrideHue = b.hue;
     if (b.style === 'a') {
       // aquarela: manchas translúcidas que se acumulam
-      ctx.globalCompositeOperation = 'lighter';
+      const ink = state.theme === 2;
+      ctx.globalCompositeOperation = ink ? 'multiply' : 'lighter';
       for (let i = 0; i < b.pts.length; i++) {
         const p = b.pts[i];
         const age = (now - p.t) / BRUSH_LIFE;
         const al = (1 - age) * strokeDim;
         const r = (18 + audio.smooth * 22) * (W / innerWidth) * (0.5 + age * 0.9);
-        ctx.fillStyle = `hsla(${b.hue},85%,58%,${0.05 * al})`;
+        ctx.fillStyle = ink ? `hsla(${b.hue},70%,42%,${0.06 * al})` : `hsla(${b.hue},85%,58%,${0.05 * al})`;
         ctx.beginPath(); ctx.arc(p.x*W, p.y*H, r, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = `hsla(${b.hue},90%,75%,${0.12 * al})`;
+        ctx.fillStyle = ink ? `hsla(${b.hue},80%,22%,${0.14 * al})` : `hsla(${b.hue},90%,75%,${0.12 * al})`;
         ctx.beginPath(); ctx.arc(p.x*W, p.y*H, r*0.35, 0, Math.PI*2); ctx.fill();
       }
       ctx.globalCompositeOperation = 'source-over';
@@ -866,6 +916,30 @@ function showQr() {
 }
 function hideQr() { document.getElementById('qrBox').classList.remove('show'); }
 
+// ============ GIROSCÓPIO / MOVIMENTO ============
+const gyro = { a: 0, b: 0, ok: false, asked: false };
+async function enableMotion() {
+  if (gyro.asked) return;
+  gyro.asked = true;
+  try {
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r !== 'granted') return;
+    }
+    addEventListener('deviceorientation', (e) => {
+      gyro.ok = true;
+      gyro.a = Math.max(-1, Math.min(1, (e.gamma || 0) / 45));          // inclinar esq/dir
+      gyro.b = Math.max(-1, Math.min(1, ((e.beta || 0) - 40) / 45));    // frente/trás
+    });
+  } catch(e) {}
+}
+// player manda o tilt pro telão
+setInterval(() => {
+  if (gyro.ok && mp.role === 'player' && mp.conn && mp.conn.open) {
+    mp.conn.send({ t: 'g', a: +gyro.a.toFixed(2), b: +gyro.b.toFixed(2) });
+  }
+}, 120);
+
 function bcast(msg, exceptPeer) {
   for (const id in mp.players) {
     if (id === exceptPeer) continue;
@@ -890,7 +964,7 @@ function hostRoom(fixedCode) {
     showQr();
     // estado da cena pra todo mundo renderizar igual
     setInterval(() => {
-      bcast({ t: 'st', base: state.shape, g: state.gradient, pl: Object.values(mp.players).map(p => ({ i: p.idx, h: p.hue, s: p.shape })) });
+      bcast({ t: 'st', base: state.shape, th: state.theme, g: state.gradient, pl: Object.values(mp.players).map(p => ({ i: p.idx, h: p.hue, s: p.shape, ta: p.tilt ? p.tilt.a : 0, tb: p.tilt ? p.tilt.b : 0 })) });
     }, 500);
   });
   mp.peer.on('connection', (c) => {
@@ -911,8 +985,9 @@ function hostRoom(fixedCode) {
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         if (i !== p.lastNote) {
           p.lastNote = i;
-          const cut = 400 + (1 - d.y) * 5000;
-          playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.4, gain: 0.24, cut });
+          const bend = p.tilt ? Math.pow(2, p.tilt.a * 2 / 12) : 1;   // ±2 semitons inclinando
+          const cut = Math.max(150, 400 + (1 - d.y) * 5000 + (p.tilt ? p.tilt.b * 1800 : 0));
+          playNote(SCALE[i] * (p.idx % 2 ? 2 : 1) * bend, { wave: WAVES[p.idx % WAVES.length], dur: 0.4, gain: 0.24, cut });
           mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
           bcast({ t: 'r', x: d.x, y: d.y, h: p.hue });
         }
@@ -927,6 +1002,10 @@ function hostRoom(fixedCode) {
         bcast({ t: 'r', x: d.x, y: d.y, h: p.hue });
       } else if (d.t === 's') {
         p.shape = d.s;
+      } else if (d.t === 'g') {
+        p.tilt = { a: d.a, b: d.b };
+      } else if (d.t === 'th') {
+        state.theme = (state.theme + 1) % THEMES.length;
       }
     });
     c.on('close', () => { delete mp.players[c.peer]; });
@@ -957,6 +1036,7 @@ function joinRoom(code) {
         mp.ripples.push({ x: d.x, y: d.y, hue: d.h, born: performance.now() });
       } else if (d.t === 'st') {
         mp.sync = d;
+        if (typeof d.th === 'number') state.theme = d.th;
       }
     });
     mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
@@ -1168,6 +1248,7 @@ function goFullscreen() {
 }
 
 const pointers = new Map();  // pointerId -> {x, y, sx, sy, t0, moved, lastNote}
+let fourFingerLock = false;
 
 function localHue() {
   return state.gradient ? state.hue : rgbToHue(state.color);
@@ -1197,16 +1278,27 @@ function fingerNote(p, pid) {
   if (idx === p.lastNote) return;
   p.lastNote = idx;
   if (synth.on) {
-    const cut = 400 + (1 - ny) * 5000;
-    playNote(SCALE[idx], { dur: 0.35, gain: 0.28, cut });
+    const bend = gyro.ok ? Math.pow(2, gyro.a * 2 / 12) : 1;
+    const cut = Math.max(150, 400 + (1 - ny) * 5000 + (gyro.ok ? gyro.b * 1800 : 0));
+    playNote(SCALE[idx] * bend, { dur: 0.35, gain: 0.28, cut });
   }
 }
 
 cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  enableMotion();  // permissão de giroscópio precisa de gesto (iOS)
   if (document.getElementById('qrBox').classList.contains('show')) hideQr();
   try { cv.setPointerCapture(e.pointerId); } catch(err) {}
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t0: performance.now(), moved: false, lastNote: -1 });
+  // 4 dedos = estética completamente nova (pra sala inteira)
+  if (pointers.size >= 4 && !fourFingerLock) {
+    fourFingerLock = true;
+    if (mp.role === 'player' && mp.conn && mp.conn.open) {
+      mp.conn.send({ t: 'th' });
+    } else {
+      state.theme = (state.theme + 1) % THEMES.length;
+    }
+  }
   if (pointers.size === 1) {
     clearTimeout(holdTimer);
     holdTimer = setTimeout(() => {
@@ -1229,6 +1321,7 @@ function endPointer(e, allowTap) {
   clearTimeout(holdTimer);
   const wasTap = allowTap && p && !p.moved && (performance.now() - p.t0) < 300 && pointers.size === 1;
   pointers.delete(e.pointerId);
+  if (pointers.size < 2) fourFingerLock = false;
   if (wasTap) {
     goFullscreen();
     if (mp.role === 'player') {
