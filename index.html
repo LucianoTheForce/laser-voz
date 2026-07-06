@@ -14,6 +14,8 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; overscroll-behavior: none; }
   canvas { display: block; position: fixed; inset: 0; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  #gl { z-index: 0; }
+  #c { z-index: 1; }
   #hud {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
     display: flex; flex-direction: column; align-items: center; gap: 10px;
@@ -74,6 +76,7 @@
 </style>
 </head>
 <body>
+<canvas id="gl"></canvas>
 <canvas id="c"></canvas>
 
 <div id="shapeName"><div class="big"></div><div class="say"></div></div>
@@ -197,7 +200,7 @@ let overrideHue = null;
 // atenuação global (formas de fundo vs pinceladas)
 let strokeDim = 1;
 
-const THEMES = ['laser', 'chrome', 'tinta'];
+const THEMES = ['laser', 'rave', 'tinta', 'nebula', 'grid'];
 
 // traço laser: render muda conforme o tema
 function laserStroke(path, alpha = 1, w = 1) {
@@ -453,7 +456,13 @@ function frame(now) {
   // gradiente gira: base lenta, áudio empurra
   state.hue = (state.hue + dt * (18 + audio.smooth * 220 + audio.bass * 120)) % 360;
   ctx.globalCompositeOperation = 'source-over';
-  if (state.theme === 1) {
+  const glTheme = state.theme >= 3 && glReady;
+  glCv.style.display = glTheme ? 'block' : 'none';
+  if (glTheme) {
+    // cena na GPU; o canvas 2D vira overlay (traços, texto, mira)
+    renderGL(now);
+    ctx.clearRect(0,0,W,H);
+  } else if (state.theme === 1) {
     // RAVE: feedback infinito — a tela é sugada num zoom-túnel girando
     ctx.save();
     ctx.globalAlpha = 0.86;
@@ -484,9 +493,11 @@ function frame(now) {
   strokeDim = 0.5;                       // formas base mais sutis, tipo lavagem de fundo
   const syncd = (mp.role === 'player' && mp.sync);
   const baseShape = syncd ? mp.sync.base : state.shape;
-  if (gyro.ok) { ctx.save(); ctx.translate(gyro.a * W * 0.06, gyro.b * H * 0.04); }
-  (draw[baseShape] || draw.tunel)(state.t);
-  if (gyro.ok) ctx.restore();
+  if (!glTheme || baseShape === 'texto') {
+    if (gyro.ok) { ctx.save(); ctx.translate(gyro.a * W * 0.06, gyro.b * H * 0.04); }
+    (draw[baseShape] || draw.tunel)(state.t);
+    if (gyro.ok) ctx.restore();
+  }
   strokeDim = 1;
 
   // pinceladas de todo mundo (aquarela sonora)
@@ -497,7 +508,7 @@ function frame(now) {
   const layer = mp.role === 'host'
     ? Object.values(mp.players)
     : (syncd && mp.sync.pl ? mp.sync.pl.map(o => ({ idx: o.i, hue: o.h, shape: o.s, tilt: { a: o.ta || 0, b: o.tb || 0 } })) : []);
-  if (layer.length) {
+  if (layer.length && !glTheme) {
     strokeDim = 0.5;
     for (const p of layer) {
       overrideHue = p.hue;
@@ -661,7 +672,9 @@ const synth = { on:false, master:null, drone:null, seqTimer:null, step:0, vol:0.
 const SCALES = [
   [110, 130.81, 146.83, 164.81, 196, 220, 261.63, 293.66, 329.63, 392, 440, 523.25],
   [82.41, 98, 110, 123.47, 130.81, 164.81, 196, 220, 246.94, 261.63, 329.63, 392],
-  [261.63, 277.18, 349.23, 392, 415.3, 523.25, 554.37, 698.46, 783.99, 830.61, 1046.5, 1108.73]
+  [261.63, 277.18, 349.23, 392, 415.3, 523.25, 554.37, 698.46, 783.99, 830.61, 1046.5, 1108.73],
+  [130.81, 146.83, 164.81, 185, 196, 220, 246.94, 261.63, 293.66, 329.63, 392, 440],
+  [110, 123.47, 130.81, 146.83, 164.81, 174.61, 207.65, 220, 246.94, 261.63, 293.66, 329.63]
 ];
 let SCALE = SCALES[0];
 let beatFlash = 0;
@@ -755,6 +768,30 @@ function startDrone() {
   if (state.theme === 2) {
     // ZEN: silêncio entre as notas faz parte
     synth.drone = { stops: [] };
+    return;
+  }
+  if (state.theme === 3) {
+    // NEBULA: pad espacial — root + quinta + oitava, filtro respirando devagar
+    const root = 65.4;
+    const mk = (f, det) => { const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = f; o.detune.value = det; return o; };
+    const oscs = [mk(root,0), mk(root*1.5,-6), mk(root*2,5), mk(root*3,8)];
+    const filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 500; filter.Q.value = 2;
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.05;
+    const lg = ctx.createGain(); lg.gain.value = 320;
+    lfo.connect(lg); lg.connect(filter.frequency);
+    const g = ctx.createGain(); g.gain.value = 0.06;
+    oscs.forEach(o => o.connect(filter));
+    filter.connect(g); g.connect(synth.master);
+    oscs.forEach(o => o.start()); lfo.start();
+    synth.drone = { stops: [...oscs, lfo] };
+    return;
+  }
+  if (state.theme === 4) {
+    // GRID: sub escuro constante
+    const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = 55;
+    const g = ctx.createGain(); g.gain.value = 0.05;
+    o.connect(g); g.connect(synth.master); o.start();
+    synth.drone = { stops: [o] };
     return;
   }
   // LASER: drone por forma — 2 osciladores detunados + sub, filtro com LFO
@@ -877,6 +914,8 @@ function pluckFM(freq, dur = 1.8, gain = 0.18) {
 function themeNote(freq, { cut = 2000, gain = 0.26, wave = 'sawtooth' } = {}) {
   if (state.theme === 1) acidNote(freq);
   else if (state.theme === 2) pluckFM(freq, 1.8, 0.2);
+  else if (state.theme === 3) playNote(freq, { wave: 'sine', dur: 2.4, gain: 0.16, cut: 3000 });
+  else if (state.theme === 4) playNote(freq, { wave: 'square', dur: 0.22, gain: 0.24, cut: Math.max(cut, 900), q: 10 });
   else playNote(freq, { wave, dur: 0.35, gain, cut });
 }
 
@@ -890,7 +929,7 @@ const ACID = [
 
 function startSeq() {
   const theme = state.theme;
-  const stepMs = theme === 1 ? 112 : Math.max(140 / state.speed, 60);   // rave: ~134 bpm em 16ths
+  const stepMs = theme === 1 ? 112 : theme === 4 ? 150 : Math.max(140 / state.speed, 60);   // rave 134bpm · grid 100bpm
   synth.seqTimer = setInterval(() => {
     if (!synth.on || !state.running) return;
     const s = synth.step++;
@@ -912,6 +951,26 @@ function startSeq() {
       // ZEN: plucks esparsos + gongo
       if (Math.random() < 0.16) pluckFM(SCALE[Math.floor(Math.random() * n)], 2.4, 0.14);
       if (s % 24 === 0) pluckFM(SCALE[0] / 2, 4.5, 0.2);
+      return;
+    }
+
+    if (theme === 3) {
+      // NEBULA: notas longas raras flutuando no pad
+      if (s % 10 === 0 && Math.random() < 0.7) {
+        playNote(SCALE[Math.floor(Math.random() * n)], { wave: 'sine', dur: 3.5, gain: 0.1, cut: 2500 });
+      }
+      return;
+    }
+
+    if (theme === 4) {
+      // GRID 2030: darksynth — bass pulsado, snare seco, arp
+      if (s % 2 === 0) playNote(SCALE[0] / (s % 8 === 0 ? 2 : 1), { wave: 'sawtooth', dur: 0.16, gain: 0.32, cut: 480, q: 8 });
+      if (s % 8 === 4) { const t2 = actx.currentTime; const src = actx.createBufferSource(); src.buffer = getNoise(actx);
+        const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1900; f.Q.value = 1.2;
+        const g = actx.createGain(); g.gain.setValueAtTime(0.3, t2); g.gain.exponentialRampToValueAtTime(0.001, t2 + 0.14);
+        src.connect(f); f.connect(g); g.connect(synth.master); src.start(t2); src.stop(t2 + 0.16); }
+      if (s % 4 === 0) kick();
+      if (Math.random() < 0.35) playNote(SCALE[(s * 3) % n] * 2, { wave: 'square', dur: 0.1, gain: 0.1, cut: 3200 });
       return;
     }
 
@@ -994,6 +1053,8 @@ function brushPoint(key, x, y, hue, style) {
   if (lp && Math.hypot(x - lp.x, y - lp.y) < 0.004) return;
   b.pts.push({ x, y, t: performance.now() });
   if (b.pts.length > 120) b.pts.shift();
+  touchFeed.push({ x, y, t: performance.now() });
+  if (touchFeed.length > 40) touchFeed.shift();
   if (state.theme === 2 && Math.random() < 0.3 && splats.length < 140) {
     splats.push({ x, y, vx: (Math.random()-0.5)*0.06, vy: -0.015 - Math.random()*0.02, hue, life: 1 });
   }
@@ -1206,6 +1267,145 @@ function joinRoom(code) {
     mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
   });
   mp.peer.on('error', (e) => { statusEl.textContent = 'erro: ' + e.type + ' (código certo?)'; });
+}
+
+// ============ WEBGL — cenas GLSL (temas 3+) ============
+const glCv = document.getElementById('gl');
+const gl = glCv.getContext('webgl', { antialias: false, alpha: false });
+let glProgs = [], glReady = false;
+const touchFeed = [];  // últimos toques de todo mundo, alimentam os shaders
+
+const GL_VERT = `attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}`;
+
+const GL_COMMON = `
+precision highp float;
+uniform vec2 u_res; uniform float u_time; uniform vec3 u_audio; uniform float u_hue;
+uniform vec2 u_tilt; uniform vec3 u_pts[8]; uniform float u_npts;
+vec3 pal(float t){ return .5 + .5*cos(6.28318*(vec3(1.)*t + vec3(0.,.33,.67) + u_hue/360.)); }
+`;
+
+// NEBULA: fluido cósmico (fbm domain-warped), toques = atratores de luz
+const GL_NEBULA = GL_COMMON + `
+float h21(vec2 p){ p=fract(p*vec2(234.34,435.345)); p+=dot(p,p+34.23); return fract(p.x*p.y); }
+float n2(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(h21(i),h21(i+vec2(1.,0.)),f.x), mix(h21(i+vec2(0.,1.)),h21(i+vec2(1.,1.)),f.x), f.y);
+}
+float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<5;i++){ v+=a*n2(p); p=p*2.03+vec2(1.7,9.2); a*=.5; } return v; }
+void main(){
+  vec2 uv=(gl_FragCoord.xy-.5*u_res)/u_res.y;
+  uv += u_tilt*.25;
+  float t=u_time*.06;
+  float warp=1.4 + u_audio.y*2.2;
+  vec2 q=vec2(fbm(uv*1.6+t), fbm(uv*1.6-t*.7));
+  vec2 r=vec2(fbm(uv*1.6+warp*q+vec2(1.7,9.2)+t*.4), fbm(uv*1.6+warp*q+vec2(8.3,2.8)-t*.3));
+  float f=fbm(uv*1.6+warp*r);
+  vec3 col=pal(f*1.4+t)*(.25+f*1.1);
+  col=mix(col, pal(f*2.+.5), dot(q,q)*.8);
+  col*=.55+u_audio.z*.9;
+  for(int i=0;i<8;i++){
+    if(float(i)>=u_npts) break;
+    vec2 pp=(u_pts[i].xy-.5)*vec2(u_res.x/u_res.y,1.);
+    float d=length(uv-pp*vec2(1.,-1.));
+    float glow=exp(-d*7.)* (1.-u_pts[i].z);
+    col+=pal(u_pts[i].z*2.+f)*glow*1.6;
+  }
+  col=pow(col, vec3(1.15));
+  gl_FragColor=vec4(col,1.);
+}`;
+
+// GRID 2030: glow-marching de túnel gyroid neon, o grave acelera o mergulho
+const GL_GRID = GL_COMMON + `
+float map(vec3 p){
+  float g = dot(sin(p*1.15), cos(p.zxy*1.15));
+  return abs(g)*.34 + .04;
+}
+void main(){
+  vec2 uv=(gl_FragCoord.xy-.5*u_res)/u_res.y;
+  uv += u_tilt*.3;
+  vec2 drift=vec2(0.);
+  for(int i=0;i<8;i++){
+    if(float(i)>=u_npts) break;
+    drift += ((u_pts[i].xy-.5)*2.)*(1.-u_pts[i].z);
+  }
+  vec3 ro=vec3(drift*.8, u_time*(1.6+u_audio.y*7.));
+  vec3 rd=normalize(vec3(uv,1.1));
+  float rot=u_time*.1+u_audio.y*.4;
+  mat2 m=mat2(cos(rot),-sin(rot),sin(rot),cos(rot));
+  rd.xy*=m;
+  vec3 col=vec3(0.);
+  float tt=0.;
+  for(int i=0;i<46;i++){
+    vec3 p=ro+rd*tt;
+    float d=map(p);
+    float glow=.014+u_audio.y*.02;
+    col+=pal(p.z*.06+float(i)*.015)*(glow/(d+.02));
+    tt+=max(d*.8,.05);
+    if(tt>26.) break;
+  }
+  col*=.05+u_audio.z*.06;
+  col=1.-exp(-col*1.6);
+  gl_FragColor=vec4(col,1.);
+}`;
+
+function glCompile(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+  return s;
+}
+function glProgram(frag) {
+  const p = gl.createProgram();
+  const v = glCompile(GL_VERT, gl.VERTEX_SHADER);
+  const f = glCompile(frag, gl.FRAGMENT_SHADER);
+  if (!v || !f) return null;
+  gl.attachShader(p, v); gl.attachShader(p, f); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(p)); return null; }
+  return p;
+}
+(function glInit(){
+  if (!gl) return;
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  glProgs = [glProgram(GL_NEBULA), glProgram(GL_GRID)];
+  glReady = glProgs.every(Boolean);
+  for (const p of glProgs) {
+    if (!p) continue;
+    gl.useProgram(p);
+    const loc = gl.getAttribLocation(p, 'a');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  }
+})();
+
+function renderGL(now) {
+  if (!glReady) return;
+  const prog = glProgs[state.theme - 3];
+  if (!prog) return;
+  if (glCv.width !== W || glCv.height !== H) {
+    glCv.width = W; glCv.height = H;
+    glCv.style.width = innerWidth + 'px'; glCv.style.height = innerHeight + 'px';
+  }
+  gl.viewport(0, 0, W, H);
+  gl.useProgram(prog);
+  gl.uniform2f(gl.getUniformLocation(prog, 'u_res'), W, H);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_time'), state.t);
+  gl.uniform3f(gl.getUniformLocation(prog, 'u_audio'), audio.level, audio.bass, audio.smooth);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_hue'), state.hue);
+  gl.uniform2f(gl.getUniformLocation(prog, 'u_tilt'), gyro.a, gyro.b);
+  const pts = new Float32Array(24);
+  let np = 0;
+  for (let i = touchFeed.length - 1; i >= 0 && np < 8; i--) {
+    const p = touchFeed[i];
+    const age = (now - p.t) / 2000;
+    if (age > 1) break;
+    pts[np*3] = p.x; pts[np*3+1] = p.y; pts[np*3+2] = age;
+    np++;
+  }
+  gl.uniform3fv(gl.getUniformLocation(prog, 'u_pts'), pts);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_npts'), np);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 // roteia transcrição (parcial ou final) pra legenda ou comandos
