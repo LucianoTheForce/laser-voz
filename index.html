@@ -60,7 +60,7 @@
 
 <div id="shapeName"><div class="big"></div><div class="say"></div></div>
 
-<div id="help">
+<div id="help" style="display:none">
   tap = próxima forma · arrastar o dedo = tocar o synth (X nota · Y brilho) · F fullscreen<br>
   fale: túnel · círculo · onda · estrela · feixes · espiral · grade · scan · lissajous · <b>modo texto</b> ("modo formas" sai)<br>
   <b>gradiente</b> (cores girando com o som) · verde azul vermelho branco roxo ciano rosa amarelo (cor fixa) · mais rápido · devagar · maior · menor · gira · para · limpa · aleatório · liga o som · para o som · mais alto · mais baixo
@@ -126,6 +126,7 @@ const textState = { interim: '', lines: [] };  // lines: {text, born}
 const shapeNameEl = document.getElementById('shapeName');
 let nameTimer;
 function showShapeName(shape) {
+  if (hud.classList.contains('hidden')) return;  // modo performance: tela limpa
   const [big, say] = SAY[shape] || [shape.toUpperCase(), ''];
   shapeNameEl.querySelector('.big').textContent = big;
   shapeNameEl.querySelector('.say').textContent = say;
@@ -700,8 +701,6 @@ function handleTranscript(text, isFinal) {
     const ok = applyCommand(text);
     lastCmdEl.textContent = (ok ? '✓ ' : '· ') + text;
     lastCmdEl.style.color = ok ? '#0f0' : '#555';
-    hud.classList.remove('hidden');
-    scheduleHide();
   }
 }
 
@@ -838,14 +837,24 @@ txt.addEventListener('keydown', (e) => {
 let hideTimer;
 function scheduleHide() {
   clearTimeout(hideTimer);
-  hud.classList.remove('hidden'); help.classList.remove('hidden');
   hideTimer = setTimeout(() => {
-    if (document.activeElement !== txt) { hud.classList.add('hidden'); help.classList.add('hidden'); }
-  }, 5000);
+    if (document.activeElement !== txt && document.activeElement !== dgKeyInput) hud.classList.add('hidden');
+  }, 4000);
 }
-addEventListener('pointerdown', scheduleHide);
-addEventListener('pointermove', scheduleHide);
+function showHud() {
+  hud.classList.remove('hidden');
+  scheduleHide();
+}
 scheduleHide();
+
+// segurar o dedo parado (600ms) mostra a interface
+let holdTimer = null;
+cv.addEventListener('pointerdown', (e) => {
+  holdTimer = setTimeout(() => { if (!touch.moved) showHud(); }, 600);
+});
+cv.addEventListener('pointermove', () => { if (touch.moved) clearTimeout(holdTimer); });
+cv.addEventListener('pointerup', () => clearTimeout(holdTimer));
+cv.addEventListener('pointercancel', () => clearTimeout(holdTimer));
 
 // toque: tap curto = fullscreen + próxima forma · arrastar = tocar o synth
 function goFullscreen() {
@@ -898,9 +907,12 @@ cv.addEventListener('pointercancel', () => { touch.down = false; });
 showShapeName(state.shape);
 
 addEventListener('keydown', (e) => {
-  if (document.activeElement === txt) return;
+  if (document.activeElement === txt || document.activeElement === dgKeyInput) return;
   if (e.key === 'f' || e.key === 'F') {
     document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  }
+  if (e.key === 'h' || e.key === 'H') {
+    hud.classList.contains('hidden') ? showHud() : hud.classList.add('hidden');
   }
 });
 </script>
