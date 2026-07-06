@@ -65,7 +65,7 @@
 <div id="hud">
   <div id="lastCmd"></div>
   <button id="micBtn">🎙 ativar mic (voz + áudio-reativo)</button>
-  <input id="txt" placeholder="ou digite um comando + enter" />
+  <input id="txt" placeholder="digite ou use o 🎙 do teclado do iPhone + enter" />
   <input id="dgkey" placeholder="API key Deepgram + enter (voz estado da arte, pt-BR)" style="display:none" />
   <div id="status">parado</div>
 </div>
@@ -555,12 +555,18 @@ function stopVoice() {
 
 micBtn.onclick = () => listening ? stopVoice() : startVoice();
 
+txt.addEventListener('input', () => {
+  // ditado nativo do iPhone/teclado: mostra ao vivo no modo texto
+  if (state.shape === 'texto') textState.interim = txt.value;
+});
+
 txt.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && txt.value.trim()) {
     const v = txt.value.trim();
     if (state.shape === 'texto' && !/modo formas|volta/.test(v.toLowerCase())) {
       textState.lines.push({ text: v, born: performance.now() });
       if (textState.lines.length > 5) textState.lines.shift();
+      textState.interim = '';
       lastCmdEl.textContent = '✓ ' + v;
       lastCmdEl.style.color = '#0f0';
     } else {
