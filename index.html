@@ -454,11 +454,26 @@ function frame(now) {
   state.hue = (state.hue + dt * (18 + audio.smooth * 220 + audio.bass * 120)) % 360;
   ctx.globalCompositeOperation = 'source-over';
   if (state.theme === 1) {
-    // CHROME: nítido, sem rastro
-    ctx.fillStyle = '#000';
+    // RAVE: feedback infinito — a tela é sugada num zoom-túnel girando
+    ctx.save();
+    ctx.globalAlpha = 0.86;
+    ctx.translate(CX, CY);
+    ctx.rotate(0.005 + audio.bass * 0.035);
+    const z = 1.018 + audio.bass * 0.06;
+    ctx.scale(z, z);
+    ctx.translate(-CX, -CY);
+    ctx.drawImage(cv, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(0,0,0,0.24)';
     ctx.fillRect(0,0,W,H);
+    if (beatFlash > 0.03) {
+      ctx.fillStyle = `rgba(255,255,255,${beatFlash * 0.09})`;
+      ctx.fillRect(0,0,W,H);
+    }
+    beatFlash *= 0.82;
   } else if (state.theme === 2) {
-    // TINTA: papel branco, rastro curto
+    // TINTA/ZEN: papel branco, rastro curto
     ctx.fillStyle = `rgba(255,255,255,${Math.max(0.06, 0.14 - audio.smooth * 0.06)})`;
     ctx.fillRect(0,0,W,H);
   } else {
@@ -476,6 +491,7 @@ function frame(now) {
 
   // pinceladas de todo mundo (aquarela sonora)
   drawBrushes(dt);
+  drawSplats(dt);
 
   // camada visual de cada player com a cor dele (todas as telas iguais)
   const layer = mp.role === 'host'
@@ -641,8 +657,25 @@ async function startAudio() {
 
 // ============ SYNTH ============
 const synth = { on:false, master:null, drone:null, seqTimer:null, step:0, vol:0.5 };
-// lá pentatônica menor, 2+ oitavas — impossível soar errado
-const SCALE = [110, 130.81, 146.83, 164.81, 196, 220, 261.63, 293.66, 329.63, 392, 440, 523.25];
+// escalas por tema: pentatônica menor (laser) · E menor (rave) · hirajoshi (zen)
+const SCALES = [
+  [110, 130.81, 146.83, 164.81, 196, 220, 261.63, 293.66, 329.63, 392, 440, 523.25],
+  [82.41, 98, 110, 123.47, 130.81, 164.81, 196, 220, 246.94, 261.63, 329.63, 392],
+  [261.63, 277.18, 349.23, 392, 415.3, 523.25, 554.37, 698.46, 783.99, 830.61, 1046.5, 1108.73]
+];
+let SCALE = SCALES[0];
+let beatFlash = 0;
+
+function setTheme(n) {
+  state.theme = ((n % THEMES.length) + THEMES.length) % THEMES.length;
+  SCALE = SCALES[state.theme];
+  if (synth.on) {
+    rebuildDrone();
+    clearInterval(synth.seqTimer);
+    synth.step = 0;
+    startSeq();
+  }
+}
 
 const PATCH = {
   tunel:     { wave:'sawtooth', base:55,   cut:380,  lfo:0.12, depth:280,  seq:'sparse' },
@@ -696,7 +729,35 @@ function startSynth() {
   comp.connect(audio.analyser);   // o visual pulsa com o próprio som do synth
   audio.on = true;
 
-  // drone: 2 osciladores detunados + sub, filtro com LFO
+  startDrone();
+  startSeq();
+  synth.on = true;
+  synthBtn.classList.add('on');
+  synthBtn.textContent = '🔊 synth ligado';
+}
+
+function stopDrone() {
+  const d = synth.drone;
+  if (d && d.stops) d.stops.forEach(o => { try { o.stop(); } catch(e) {} });
+  synth.drone = null;
+}
+
+function startDrone() {
+  const ctx = actx;
+  if (state.theme === 1) {
+    // RAVE: só um sub firme, a bateria e o acid carregam
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = 41.2;
+    const g = ctx.createGain(); g.gain.value = 0.06;
+    o.connect(g); g.connect(synth.master); o.start();
+    synth.drone = { stops: [o] };
+    return;
+  }
+  if (state.theme === 2) {
+    // ZEN: silêncio entre as notas faz parte
+    synth.drone = { stops: [] };
+    return;
+  }
+  // LASER: drone por forma — 2 osciladores detunados + sub, filtro com LFO
   const p = PATCH[state.shape] || PATCH.tunel;
   const filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = p.cut; filter.Q.value = 6;
   const dGain = ctx.createGain(); dGain.gain.value = 0.11;
@@ -709,37 +770,36 @@ function startSynth() {
   o1.connect(filter); o2.connect(filter); sub.connect(filter);
   filter.connect(dGain); dGain.connect(synth.master);
   [o1,o2,sub,lfo].forEach(o => o.start());
-  synth.drone = { o1, o2, sub, lfo, lfoGain, filter };
-
-  startSeq();
-  synth.on = true;
-  synthBtn.classList.add('on');
-  synthBtn.textContent = '🔊 synth ligado';
+  synth.drone = { o1, o2, sub, lfo, lfoGain, filter, stops: [o1,o2,sub,lfo] };
 }
+
+function rebuildDrone() { stopDrone(); startDrone(); }
 
 function stopSynth() {
   if (!synth.on) return;
   clearInterval(synth.seqTimer);
-  const d = synth.drone;
-  if (d) [d.o1,d.o2,d.sub,d.lfo].forEach(o => { try { o.stop(); } catch(e){} });
+  stopDrone();
   try { synth.master.disconnect(); } catch(e){}
-  synth.on = false; synth.drone = null;
+  synth.on = false;
   synthBtn.classList.remove('on');
   synthBtn.textContent = '🔊 ligar synth';
 }
 
-// muda o timbre do drone quando a forma muda
+// muda o timbre quando a forma muda
 function applyPatch(shape) {
-  if (!synth.on || !synth.drone) return;
-  const p = PATCH[shape] || PATCH.tunel;
-  const t = actx.currentTime, d = synth.drone;
-  d.o1.type = p.wave; d.o2.type = p.wave;
-  d.o1.frequency.linearRampToValueAtTime(p.base, t + 0.4);
-  d.o2.frequency.linearRampToValueAtTime(p.base * 1.006, t + 0.4);
-  d.sub.frequency.linearRampToValueAtTime(p.base / 2, t + 0.4);
-  d.filter.frequency.linearRampToValueAtTime(p.cut, t + 0.4);
-  d.lfo.frequency.linearRampToValueAtTime(p.lfo, t + 0.4);
-  d.lfoGain.gain.linearRampToValueAtTime(p.depth, t + 0.4);
+  if (!synth.on) return;
+  const d = synth.drone;
+  if (state.theme === 0 && d && d.o1) {
+    const p = PATCH[shape] || PATCH.tunel;
+    const t = actx.currentTime;
+    d.o1.type = p.wave; d.o2.type = p.wave;
+    d.o1.frequency.linearRampToValueAtTime(p.base, t + 0.4);
+    d.o2.frequency.linearRampToValueAtTime(p.base * 1.006, t + 0.4);
+    d.sub.frequency.linearRampToValueAtTime(p.base / 2, t + 0.4);
+    d.filter.frequency.linearRampToValueAtTime(p.cut, t + 0.4);
+    d.lfo.frequency.linearRampToValueAtTime(p.lfo, t + 0.4);
+    d.lfoGain.gain.linearRampToValueAtTime(p.depth, t + 0.4);
+  }
   clearInterval(synth.seqTimer);
   startSeq();
 }
@@ -769,13 +829,93 @@ function playHat() {
   s.start(t); s.stop(t + 0.08);
 }
 
+function kick() {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  const o = actx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(130, t);
+  o.frequency.exponentialRampToValueAtTime(38, t + 0.11);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.85, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+  o.connect(g); g.connect(synth.master);
+  o.start(t); o.stop(t + 0.26);
+  beatFlash = 1;
+}
+
+function acidNote(freq) {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  const o = actx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq;
+  const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = 16;
+  f.frequency.setValueAtTime(1800 + audio.smooth * 2200, t);
+  f.frequency.exponentialRampToValueAtTime(200, t + 0.16);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.26, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
+  o.connect(f); f.connect(g); g.connect(synth.master);
+  o.start(t); o.stop(t + 0.21);
+}
+
+function pluckFM(freq, dur = 1.8, gain = 0.18) {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  const car = actx.createOscillator(); car.type = 'sine'; car.frequency.value = freq;
+  const mod = actx.createOscillator(); mod.frequency.value = freq * 3.51;
+  const mg = actx.createGain();
+  mg.gain.setValueAtTime(freq * 2.4, t);
+  mg.gain.exponentialRampToValueAtTime(1, t + dur * 0.5);
+  mod.connect(mg); mg.connect(car.frequency);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(gain, t);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  car.connect(g); g.connect(synth.master);
+  car.start(t); mod.start(t); car.stop(t + dur + 0.1); mod.stop(t + dur + 0.1);
+}
+
+// nota do dedo, com o instrumento do tema atual
+function themeNote(freq, { cut = 2000, gain = 0.26, wave = 'sawtooth' } = {}) {
+  if (state.theme === 1) acidNote(freq);
+  else if (state.theme === 2) pluckFM(freq, 1.8, 0.2);
+  else playNote(freq, { wave, dur: 0.35, gain, cut });
+}
+
+// padrões de bassline acid por forma
+const ACID = [
+  [0,null,0,3,null,0,5,null,0,null,7,0,null,3,null,5],
+  [0,0,null,5,0,null,3,null,0,0,null,7,null,5,3,null],
+  [2,null,2,null,5,null,2,7,null,2,null,9,2,null,5,null],
+  [0,null,3,null,0,5,null,3,0,null,7,null,5,null,3,0]
+];
+
 function startSeq() {
-  const stepMs = () => Math.max(140 / state.speed, 60);
+  const theme = state.theme;
+  const stepMs = theme === 1 ? 112 : Math.max(140 / state.speed, 60);   // rave: ~134 bpm em 16ths
   synth.seqTimer = setInterval(() => {
     if (!synth.on || !state.running) return;
-    const p = PATCH[state.shape] || PATCH.tunel;
     const s = synth.step++;
     const n = SCALE.length;
+
+    if (theme === 1) {
+      // RAVE: kick 4x4, hats, bassline acid por forma
+      if (s % 4 === 0) kick();
+      if (s % 4 === 2) playHat();
+      if (s % 16 === 14) { playHat(); }
+      const shapeI = Math.max(0, SHAPES.indexOf(state.shape));
+      const pat = ACID[shapeI % ACID.length];
+      const note = pat[s % 16];
+      if (note != null) acidNote(SCALE[note] / 2);
+      return;
+    }
+
+    if (theme === 2) {
+      // ZEN: plucks esparsos + gongo
+      if (Math.random() < 0.16) pluckFM(SCALE[Math.floor(Math.random() * n)], 2.4, 0.14);
+      if (s % 24 === 0) pluckFM(SCALE[0] / 2, 4.5, 0.2);
+      return;
+    }
+
+    const p = PATCH[state.shape] || PATCH.tunel;
     switch (p.seq) {
       case 'arp':
         playNote(SCALE[(s * 2) % n], { dur: 0.18, cut: 2500 });
@@ -804,7 +944,7 @@ function startSeq() {
         break;
       // 'none': só o drone + LFO
     }
-  }, stepMs());
+  }, stepMs);
 }
 
 // ============ MULTIPLAYER (PeerJS, P2P) ============
@@ -842,6 +982,9 @@ const BRUSH_LIFE = 3800;
 const BRUSH_STYLES = ['g', 'f', 'a', 'g', 'a', 'f'];  // grossa, fina, aquarela — por player
 const brushes = new Map();  // key -> {pts:[{x,y,t}], hue, style}
 
+// gotas de nanquim (tema tinta/zen)
+const splats = [];
+
 function brushPoint(key, x, y, hue, style) {
   let b = brushes.get(key);
   if (!b) { b = { pts: [], hue, style: style || 'f' }; brushes.set(key, b); }
@@ -851,6 +994,27 @@ function brushPoint(key, x, y, hue, style) {
   if (lp && Math.hypot(x - lp.x, y - lp.y) < 0.004) return;
   b.pts.push({ x, y, t: performance.now() });
   if (b.pts.length > 120) b.pts.shift();
+  if (state.theme === 2 && Math.random() < 0.3 && splats.length < 140) {
+    splats.push({ x, y, vx: (Math.random()-0.5)*0.06, vy: -0.015 - Math.random()*0.02, hue, life: 1 });
+  }
+}
+
+function drawSplats(dt) {
+  if (!splats.length) return;
+  ctx.globalCompositeOperation = state.theme === 2 ? 'multiply' : 'lighter';
+  for (let i = splats.length - 1; i >= 0; i--) {
+    const s = splats[i];
+    s.vy += 0.09 * dt;
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    s.life -= dt * 0.6;
+    if (s.life <= 0 || s.y > 1.05) { splats.splice(i, 1); continue; }
+    const r = (2.5 + (1 - s.life) * 5) * (W / innerWidth);
+    ctx.fillStyle = state.theme === 2
+      ? `hsla(${s.hue},75%,25%,${0.5 * s.life})`
+      : `hsla(${s.hue},90%,65%,${0.5 * s.life})`;
+    ctx.beginPath(); ctx.arc(s.x*W, s.y*H, r, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 function drawBrushes(dt) {
@@ -987,14 +1151,14 @@ function hostRoom(fixedCode) {
           p.lastNote = i;
           const bend = p.tilt ? Math.pow(2, p.tilt.a * 2 / 12) : 1;   // ±2 semitons inclinando
           const cut = Math.max(150, 400 + (1 - d.y) * 5000 + (p.tilt ? p.tilt.b * 1800 : 0));
-          playNote(SCALE[i] * (p.idx % 2 ? 2 : 1) * bend, { wave: WAVES[p.idx % WAVES.length], dur: 0.4, gain: 0.24, cut });
+          themeNote(SCALE[i] * (p.idx % 2 ? 2 : 1) * bend, { wave: WAVES[p.idx % WAVES.length], gain: 0.24, cut });
           mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
           bcast({ t: 'r', x: d.x, y: d.y, h: p.hue });
         }
       } else if (d.t === 'n') {
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         const cut = 400 + (1 - d.y) * 5000;
-        playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.35, gain: 0.26, cut });
+        themeNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], gain: 0.26, cut });
         mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
         const st = BRUSH_STYLES[p.idx % BRUSH_STYLES.length];
         brushPoint('p' + p.idx, d.x, d.y, p.hue, st);
@@ -1005,7 +1169,7 @@ function hostRoom(fixedCode) {
       } else if (d.t === 'g') {
         p.tilt = { a: d.a, b: d.b };
       } else if (d.t === 'th') {
-        state.theme = (state.theme + 1) % THEMES.length;
+        setTheme(state.theme + 1);
       }
     });
     c.on('close', () => { delete mp.players[c.peer]; });
@@ -1036,7 +1200,7 @@ function joinRoom(code) {
         mp.ripples.push({ x: d.x, y: d.y, hue: d.h, born: performance.now() });
       } else if (d.t === 'st') {
         mp.sync = d;
-        if (typeof d.th === 'number') state.theme = d.th;
+        if (typeof d.th === 'number' && d.th !== state.theme) setTheme(d.th);
       }
     });
     mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
@@ -1280,7 +1444,7 @@ function fingerNote(p, pid) {
   if (synth.on) {
     const bend = gyro.ok ? Math.pow(2, gyro.a * 2 / 12) : 1;
     const cut = Math.max(150, 400 + (1 - ny) * 5000 + (gyro.ok ? gyro.b * 1800 : 0));
-    playNote(SCALE[idx] * bend, { dur: 0.35, gain: 0.28, cut });
+    themeNote(SCALE[idx] * bend, { gain: 0.28, cut });
   }
 }
 
@@ -1296,7 +1460,7 @@ cv.addEventListener('pointerdown', (e) => {
     if (mp.role === 'player' && mp.conn && mp.conn.open) {
       mp.conn.send({ t: 'th' });
     } else {
-      state.theme = (state.theme + 1) % THEMES.length;
+      setTheme(state.theme + 1);
     }
   }
   if (pointers.size === 1) {
