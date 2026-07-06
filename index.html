@@ -197,19 +197,19 @@ let overrideHue = null;
 let strokeDim = 1;
 
 // traço laser: passada larga translúcida (halo) + passada fina sólida
-function laserStroke(path, alpha = 1) {
+function laserStroke(path, alpha = 1, w = 1) {
   alpha *= strokeDim;
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   if (overrideHue !== null) {
     const h = overrideHue;
-    ctx.strokeStyle = `hsla(${h},95%,55%,${0.12*alpha})`; ctx.lineWidth = 10;  ctx.stroke(path);
-    ctx.strokeStyle = `hsla(${h},95%,60%,${0.35*alpha})`; ctx.lineWidth = 4;   ctx.stroke(path);
-    ctx.strokeStyle = `hsla(${h},95%,85%,${alpha})`;      ctx.lineWidth = 1.4; ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},95%,55%,${0.12*alpha})`; ctx.lineWidth = 10*w;  ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},95%,60%,${0.35*alpha})`; ctx.lineWidth = 4*w;   ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},95%,85%,${alpha})`;      ctx.lineWidth = 1.4*w; ctx.stroke(path);
   } else if (state.gradient) {
-    ctx.strokeStyle = grad(0.12*alpha, 55); ctx.lineWidth = 10; ctx.stroke(path);
-    ctx.strokeStyle = grad(0.35*alpha, 62); ctx.lineWidth = 4;  ctx.stroke(path);
-    ctx.strokeStyle = grad(alpha, 82);      ctx.lineWidth = 1.4; ctx.stroke(path);
+    ctx.strokeStyle = grad(0.12*alpha, 55); ctx.lineWidth = 10*w; ctx.stroke(path);
+    ctx.strokeStyle = grad(0.35*alpha, 62); ctx.lineWidth = 4*w;  ctx.stroke(path);
+    ctx.strokeStyle = grad(alpha, 82);      ctx.lineWidth = 1.4*w; ctx.stroke(path);
   } else {
     const [r,g,b] = state.color;
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
@@ -424,22 +424,29 @@ function frame(now) {
   ctx.fillStyle = `rgba(0,0,0,${Math.max(0.045, 0.13 - audio.smooth * 0.07)})`;
   ctx.fillRect(0,0,W,H);
   strokeDim = 0.5;                       // formas base mais sutis, tipo lavagem de fundo
-  (draw[state.shape] || draw.tunel)(state.t);
+  const syncd = (mp.role === 'player' && mp.sync);
+  const baseShape = syncd ? mp.sync.base : state.shape;
+  (draw[baseShape] || draw.tunel)(state.t);
   strokeDim = 1;
 
   // pinceladas de todo mundo (aquarela sonora)
   drawBrushes(dt);
 
-  // telão: camada visual de cada player com a cor dele
-  if (mp.role === 'host') {
+  // camada visual de cada player com a cor dele (todas as telas iguais)
+  const layer = mp.role === 'host'
+    ? Object.values(mp.players)
+    : (syncd && mp.sync.pl ? mp.sync.pl.map(o => ({ idx: o.i, hue: o.h, shape: o.s })) : []);
+  if (layer.length) {
     strokeDim = 0.5;
-    for (const id in mp.players) {
-      const p = mp.players[id];
+    for (const p of layer) {
       overrideHue = p.hue;
       (draw[p.shape] || draw.circulo)(state.t + p.idx * 0.9);
       overrideHue = null;
     }
     strokeDim = 1;
+  }
+  // pulsos das notas (todas as telas)
+  {
     const now = performance.now();
     mp.ripples = mp.ripples.filter(r => now - r.born < 900);
     for (const r of mp.ripples) {
@@ -751,7 +758,7 @@ function startSeq() {
 
 // ============ MULTIPLAYER (PeerJS, P2P) ============
 // telão = host (renderiza tudo + synth na caixa) · celulares = controles
-const mp = { role: null, peer: null, code: null, players: {}, conn: null, idx: 0, hue: null, nextIdx: 1, ripples: [] };
+const mp = { role: null, peer: null, code: null, players: {}, conn: null, idx: 0, hue: null, nextIdx: 1, ripples: [], sync: null, myShape: null };
 const WAVES = ['sawtooth', 'square', 'triangle', 'sine'];
 
 function randCode() {
@@ -780,13 +787,15 @@ function rgbToHue([r,g,b]) {
 }
 
 // ============ PINCELADAS (aquarela sonora) ============
-const BRUSH_LIFE = 3000;
-const brushes = new Map();  // key -> {pts:[{x,y,t}], hue}
+const BRUSH_LIFE = 3800;
+const BRUSH_STYLES = ['g', 'f', 'a', 'g', 'a', 'f'];  // grossa, fina, aquarela — por player
+const brushes = new Map();  // key -> {pts:[{x,y,t}], hue, style}
 
-function brushPoint(key, x, y, hue) {
+function brushPoint(key, x, y, hue, style) {
   let b = brushes.get(key);
-  if (!b) { b = { pts: [], hue }; brushes.set(key, b); }
+  if (!b) { b = { pts: [], hue, style: style || 'f' }; brushes.set(key, b); }
   b.hue = hue;
+  if (style) b.style = style;
   const lp = b.pts[b.pts.length - 1];
   if (lp && Math.hypot(x - lp.x, y - lp.y) < 0.004) return;
   b.pts.push({ x, y, t: performance.now() });
@@ -798,21 +807,45 @@ function drawBrushes(dt) {
   for (const [key, b] of brushes) {
     b.pts = b.pts.filter(p => now - p.t < BRUSH_LIFE);
     if (b.pts.length < 2) { if (!b.pts.length) brushes.delete(key); continue; }
-    // deriva: campo de fluxo suave — a pincelada escorre
     for (const p of b.pts) {
+      const age = (now - p.t) / BRUSH_LIFE;
+      // campo de fluxo suave — a pincelada escorre
       const a = Math.sin(p.x * 5.3 + state.t * 0.6) + Math.cos(p.y * 5.3 - state.t * 0.45);
-      const drift = (0.015 + audio.smooth * 0.03) * dt;
+      const drift = (0.012 + audio.smooth * 0.025) * dt;
       p.x += Math.cos(a * Math.PI) * drift;
       p.y += Math.sin(a * Math.PI) * drift;
+      // VORTEX: quanto mais velho o traço, mais é sugado girando pro centro
+      const vx = p.x - 0.5, vy = p.y - 0.5, vr = Math.hypot(vx, vy) + 0.0001;
+      const vf = age * age * (0.28 + audio.smooth * 0.5) * dt;
+      p.x += (-vy / vr) * vf - (vx / vr) * vf * 0.4;
+      p.y += ( vx / vr) * vf - (vy / vr) * vf * 0.4;
     }
     overrideHue = b.hue;
-    for (let i = 1; i < b.pts.length; i++) {
-      const p0 = b.pts[i-1], p1 = b.pts[i];
-      const age = (now - p1.t) / BRUSH_LIFE;
-      const path = new Path2D();
-      path.moveTo(p0.x * W, p0.y * H);
-      path.lineTo(p1.x * W, p1.y * H);
-      laserStroke(path, (1 - age) * 0.9);
+    if (b.style === 'a') {
+      // aquarela: manchas translúcidas que se acumulam
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < b.pts.length; i++) {
+        const p = b.pts[i];
+        const age = (now - p.t) / BRUSH_LIFE;
+        const al = (1 - age) * strokeDim;
+        const r = (18 + audio.smooth * 22) * (W / innerWidth) * (0.5 + age * 0.9);
+        ctx.fillStyle = `hsla(${b.hue},85%,58%,${0.05 * al})`;
+        ctx.beginPath(); ctx.arc(p.x*W, p.y*H, r, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = `hsla(${b.hue},90%,75%,${0.12 * al})`;
+        ctx.beginPath(); ctx.arc(p.x*W, p.y*H, r*0.35, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    } else {
+      const wMult = b.style === 'g' ? 2.8 : 1;
+      const aMult = b.style === 'g' ? 0.75 : 0.9;
+      for (let i = 1; i < b.pts.length; i++) {
+        const p0 = b.pts[i-1], p1 = b.pts[i];
+        const age = (now - p1.t) / BRUSH_LIFE;
+        const path = new Path2D();
+        path.moveTo(p0.x * W, p0.y * H);
+        path.lineTo(p1.x * W, p1.y * H);
+        laserStroke(path, (1 - age) * aMult, wMult);
+      }
     }
     overrideHue = null;
   }
@@ -853,6 +886,10 @@ function hostRoom(fixedCode) {
     waBtn.style.display = '';
     if (!synth.on) startSynth();
     showQr();
+    // estado da cena pra todo mundo renderizar igual
+    setInterval(() => {
+      bcast({ t: 'st', base: state.shape, g: state.gradient, pl: Object.values(mp.players).map(p => ({ i: p.idx, h: p.hue, s: p.shape })) });
+    }, 500);
   });
   mp.peer.on('connection', (c) => {
     c.on('open', () => {
@@ -866,22 +903,26 @@ function hostRoom(fixedCode) {
       const p = mp.players[c.peer]; if (!p || !d) return;
       if (d.t === 'm') {
         // movimento contínuo = pincelada; nota toca quando muda de "tecla"
-        brushPoint('p' + p.idx, d.x, d.y, p.hue);
-        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue }, c.peer);
+        const st = BRUSH_STYLES[p.idx % BRUSH_STYLES.length];
+        brushPoint('p' + p.idx, d.x, d.y, p.hue, st);
+        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue, s: st }, c.peer);
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         if (i !== p.lastNote) {
           p.lastNote = i;
           const cut = 400 + (1 - d.y) * 5000;
           playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.4, gain: 0.24, cut });
           mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
+          bcast({ t: 'r', x: d.x, y: d.y, h: p.hue });
         }
       } else if (d.t === 'n') {
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         const cut = 400 + (1 - d.y) * 5000;
         playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.35, gain: 0.26, cut });
         mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
-        brushPoint('p' + p.idx, d.x, d.y, p.hue);
-        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue }, c.peer);
+        const st = BRUSH_STYLES[p.idx % BRUSH_STYLES.length];
+        brushPoint('p' + p.idx, d.x, d.y, p.hue, st);
+        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue, s: st }, c.peer);
+        bcast({ t: 'r', x: d.x, y: d.y, h: p.hue });
       } else if (d.t === 's') {
         p.shape = d.s;
       }
@@ -903,15 +944,17 @@ function joinRoom(code) {
       scheduleHide();
     });
     mp.conn.on('data', (d) => {
-      if (d && d.t === 'hi') {
+      if (!d) return;
+      if (d.t === 'hi') {
         mp.idx = d.idx; mp.hue = d.hue;
-        state.gradient = false;
-        state.color = hueToRgb(d.hue);
-        state.shape = SHAPES[d.idx % (SHAPES.length - 1)];
+        mp.myShape = SHAPES[d.idx % (SHAPES.length - 1)];
         roomEl.textContent = 'SALA ' + code.toUpperCase() + ' · PLAYER ' + d.idx;
-      } else if (d && d.t === 'b') {
-        // pincelada de outra pessoa (retransmitida pelo telão)
-        brushPoint(d.k, d.x, d.y, d.h);
+      } else if (d.t === 'b') {
+        brushPoint(d.k, d.x, d.y, d.h, d.s);
+      } else if (d.t === 'r') {
+        mp.ripples.push({ x: d.x, y: d.y, hue: d.h, born: performance.now() });
+      } else if (d.t === 'st') {
+        mp.sync = d;
       }
     });
     mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
@@ -1136,16 +1179,16 @@ function fingerNote(p, pid) {
       p.lastSend = now;
       mp.conn.send({ t: 'm', x: nx, y: ny });
     }
-    brushPoint('me' + pid, nx, ny, mp.hue != null ? mp.hue : localHue());  // preview local
+    brushPoint('me' + pid, nx, ny, mp.hue != null ? mp.hue : localHue(), BRUSH_STYLES[mp.idx % BRUSH_STYLES.length]);  // preview local
     return;
   }
   // host / solo: pincelada + nota
-  brushPoint('l' + pid, nx, ny, localHue());
+  brushPoint('l' + pid, nx, ny, localHue(), BRUSH_STYLES[0]);
   if (mp.role === 'host') {
     const now = performance.now();
     if (!p.lastBcast || now - p.lastBcast > 40) {
       p.lastBcast = now;
-      bcast({ t: 'b', k: 'l' + pid, x: nx, y: ny, h: localHue() });
+      bcast({ t: 'b', k: 'l' + pid, x: nx, y: ny, h: localHue(), s: BRUSH_STYLES[0] });
     }
   }
   const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(nx * SCALE.length)));
@@ -1186,10 +1229,17 @@ function endPointer(e, allowTap) {
   pointers.delete(e.pointerId);
   if (wasTap) {
     goFullscreen();
-    const i = SHAPES.indexOf(state.shape);
-    state.shape = SHAPES[(i + 1) % SHAPES.length];
-    showShapeName(state.shape);
-    if (mp.role === 'player' && mp.conn && mp.conn.open) mp.conn.send({ t: 's', s: state.shape });
+    if (mp.role === 'player') {
+      const cur = mp.myShape || SHAPES[0];
+      const i = SHAPES.indexOf(cur);
+      mp.myShape = SHAPES[(i + 1) % SHAPES.length];
+      showShapeName(mp.myShape);
+      if (mp.conn && mp.conn.open) mp.conn.send({ t: 's', s: mp.myShape });
+    } else {
+      const i = SHAPES.indexOf(state.shape);
+      state.shape = SHAPES[(i + 1) % SHAPES.length];
+      showShapeName(state.shape);
+    }
   }
 }
 cv.addEventListener('pointerup', (e) => endPointer(e, true));
