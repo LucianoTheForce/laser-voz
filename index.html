@@ -563,6 +563,8 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let micStream = null, actx = null;
 
 function ensureCtx() {
+  // iOS: categoria playback = toca mesmo com o botão de silencioso ligado
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e) {}
   if (!actx) {
     actx = new (window.AudioContext || window.webkitAudioContext)();
     audio.analyser = actx.createAnalyser();
@@ -1247,6 +1249,14 @@ cv.addEventListener('pointercancel', (e) => endPointer(e, false));
 
 // mostra o nome da forma inicial ao abrir
 showShapeName(state.shape);
+
+// iOS suspende o áudio ao minimizar ou em standalone: retoma em gesto e ao voltar
+function wakeAudio() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e) {}
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+addEventListener('pointerdown', wakeAudio, true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeAudio(); });
 
 // entrou pelo link da sala? conecta automático como controle
 const params = new URLSearchParams(location.search);
