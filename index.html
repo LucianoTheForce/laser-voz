@@ -831,9 +831,9 @@ function showQr() {
 }
 function hideQr() { document.getElementById('qrBox').classList.remove('show'); }
 
-function hostRoom() {
+function hostRoom(fixedCode) {
   if (mp.peer || typeof Peer === 'undefined') return;
-  const code = randCode();
+  const code = (fixedCode || randCode()).toUpperCase();
   mp.peer = new Peer('laservoz-' + code);
   mp.peer.on('open', () => {
     mp.role = 'host'; mp.code = code;
@@ -1179,8 +1179,12 @@ cv.addEventListener('pointercancel', (e) => endPointer(e, false));
 showShapeName(state.shape);
 
 // entrou pelo link da sala? conecta automático como controle
-const roomParam = new URLSearchParams(location.search).get('s');
-if (roomParam && roomParam.length >= 4) {
+const params = new URLSearchParams(location.search);
+const roomParam = params.get('s');
+const hostParam = params.get('host');
+if (hostParam && hostParam.length >= 4) {
+  setTimeout(() => hostRoom(hostParam), 300);
+} else if (roomParam && roomParam.length >= 4) {
   setTimeout(() => joinRoom(roomParam), 300);
 }
 
