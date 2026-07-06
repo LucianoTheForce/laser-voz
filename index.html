@@ -428,6 +428,67 @@ const draw = {
   }
 };
 
+function currentStep16() {
+  if (mp.role === 'player') {
+    if (!mp.syncStep) return 0;
+    const theme = state.theme;
+    const stepMs = theme === 1 ? 112 : theme === 4 ? 150 : Math.max(140 / state.speed, 60);
+    return Math.floor(mp.syncStep.s + (performance.now() - mp.syncStep.at) / stepMs) % 16;
+  }
+  return synth.step % 16;
+}
+
+function uiHue() { return mp.hue != null ? mp.hue : (state.gradient ? state.hue : rgbToHue(state.color)); }
+
+function drawPianoUI(dt) {
+  const cols = SCALE.length, h = uiHue();
+  const sx = W / innerWidth;
+  ctx.globalCompositeOperation = 'lighter';
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = c + (1 - r) * cols;   // linha de cima = oitava acima
+      const x = c / cols * W, y = r * H / 2, w = W / cols, hh = H / 2;
+      const flash = pianoFlash.get(idx) || 0;
+      ctx.strokeStyle = `hsla(${h},80%,70%,0.22)`;
+      ctx.lineWidth = 1 * sx;
+      ctx.strokeRect(x + 2, y + 2, w - 4, hh - 4);
+      if (flash > 0.02) {
+        ctx.fillStyle = `hsla(${h},95%,62%,${flash * 0.5})`;
+        ctx.fillRect(x + 2, y + 2, w - 4, hh - 4);
+        pianoFlash.set(idx, flash * Math.pow(0.02, dt));
+      }
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawDrumUI() {
+  const gx = W * 0.06, gw = W * 0.88;
+  const gy = H * 0.22, gh = H * 0.56;
+  const h = uiHue(), sx = W / innerWidth;
+  const step = currentStep16();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 16; c++) {
+      const x = gx + c / 16 * gw, y = gy + r / 4 * gh;
+      const w = gw / 16, hh = gh / 4;
+      const on = myDrums[r][c];
+      ctx.strokeStyle = `hsla(${h},80%,70%,${c === step ? 0.65 : 0.2})`;
+      ctx.lineWidth = (c === step ? 2 : 1) * sx;
+      ctx.strokeRect(x + 2*sx, y + 2*sx, w - 4*sx, hh - 4*sx);
+      if (on) {
+        ctx.fillStyle = `hsla(${h},95%,60%,${c === step ? 0.95 : 0.5})`;
+        ctx.fillRect(x + 4*sx, y + 4*sx, w - 8*sx, hh - 8*sx);
+      }
+    }
+  }
+  ctx.font = `700 ${12 * sx}px ui-monospace, monospace`;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = `hsla(${h},80%,75%,0.6)`;
+  ['KCK','SNR','HAT','CLP'].forEach((l, r) => ctx.fillText(l, gx - 8*sx, gy + (r + 0.5) / 4 * gh));
+  ctx.globalCompositeOperation = 'source-over';
+}
+
 // ============ LOOP ============
 let last = performance.now();
 function frame(now) {
@@ -504,6 +565,10 @@ function frame(now) {
   drawBrushes(dt);
   drawSplats(dt);
 
+  // UI dos instrumentos (no aparelho que está nesse modo)
+  if (iMode === 'piano') drawPianoUI(dt);
+  else if (iMode === 'drums') drawDrumUI();
+
   // camada visual de cada player com a cor dele (todas as telas iguais)
   const layer = mp.role === 'host'
     ? Object.values(mp.players)
@@ -539,7 +604,7 @@ function frame(now) {
   if (state.shape !== frame.lastShape) { applyPatch(state.shape); frame.lastShape = state.shape; }
 
   // mira laser em cada dedo (alinhada com a escala real do canvas)
-  if (pointers.size > 0 && (synth.on || mp.role === 'player')) {
+  if (pointers.size > 0 && iMode === 'pincel' && (synth.on || mp.role === 'player')) {
     const sx = W / innerWidth, sy = H / innerHeight;
     for (const p of pointers.values()) {
       if (!p.moved) continue;
@@ -910,6 +975,56 @@ function pluckFM(freq, dur = 1.8, gain = 0.18) {
   car.start(t); mod.start(t); car.stop(t + dur + 0.1); mod.stop(t + dur + 0.1);
 }
 
+function snare() {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  const src = actx.createBufferSource(); src.buffer = getNoise(actx);
+  const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1900; f.Q.value = 1.1;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.32, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  src.connect(f); f.connect(g); g.connect(synth.master);
+  src.start(t); src.stop(t + 0.17);
+}
+
+function clap() {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  for (let i = 0; i < 3; i++) {
+    const src = actx.createBufferSource(); src.buffer = getNoise(actx);
+    const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1200; f.Q.value = 1.6;
+    const g = actx.createGain();
+    const t0 = t + i * 0.02;
+    g.gain.setValueAtTime(0.22, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+    src.connect(f); f.connect(g); g.connect(synth.master);
+    src.start(t0); src.stop(t0 + 0.1);
+  }
+}
+
+// e-piano FM (tipo Rhodes): FM 1:1 + tine de ataque
+function epiano(freq, gain = 0.24) {
+  if (!synth.on) return;
+  const t = actx.currentTime;
+  const car = actx.createOscillator(); car.frequency.value = freq;
+  const mod = actx.createOscillator(); mod.frequency.value = freq;
+  const mg = actx.createGain();
+  mg.gain.setValueAtTime(freq * 1.9, t);
+  mg.gain.exponentialRampToValueAtTime(0.5, t + 0.9);
+  mod.connect(mg); mg.connect(car.frequency);
+  const tine = actx.createOscillator(); tine.frequency.value = freq * 7;
+  const tg = actx.createGain();
+  tg.gain.setValueAtTime(0.07, t);
+  tg.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  tine.connect(tg);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(gain, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
+  car.connect(g); tg.connect(g); g.connect(synth.master);
+  car.start(t); mod.start(t); tine.start(t);
+  car.stop(t + 1.6); mod.stop(t + 1.6); tine.stop(t + 0.1);
+}
+
 // nota do dedo, com o instrumento do tema atual
 function themeNote(freq, { cut = 2000, gain = 0.26, wave = 'sawtooth' } = {}) {
   if (state.theme === 1) acidNote(freq);
@@ -934,6 +1049,18 @@ function startSeq() {
     if (!synth.on || !state.running) return;
     const s = synth.step++;
     const n = SCALE.length;
+
+    // LAYERS: os drum patterns de todo mundo somam por cima de qualquer mundo
+    const st16 = s % 16;
+    const kits = [];
+    if (myDrums && myDrums.some(r => r.some(Boolean))) kits.push(myDrums);
+    if (mp.role === 'host') for (const id in mp.players) { const dp = mp.players[id].drums; if (dp) kits.push(dp); }
+    for (const k of kits) {
+      if (k[0][st16]) kick();
+      if (k[1][st16]) snare();
+      if (k[2][st16]) playHat();
+      if (k[3][st16]) clap();
+    }
 
     if (theme === 1) {
       // RAVE: kick 4x4, hats, bassline acid por forma
@@ -1189,7 +1316,7 @@ function hostRoom(fixedCode) {
     showQr();
     // estado da cena pra todo mundo renderizar igual
     setInterval(() => {
-      bcast({ t: 'st', base: state.shape, th: state.theme, g: state.gradient, pl: Object.values(mp.players).map(p => ({ i: p.idx, h: p.hue, s: p.shape, ta: p.tilt ? p.tilt.a : 0, tb: p.tilt ? p.tilt.b : 0 })) });
+      bcast({ t: 'st', base: state.shape, th: state.theme, g: state.gradient, sp: synth.step, pl: Object.values(mp.players).map(p => ({ i: p.idx, h: p.hue, s: p.shape, ta: p.tilt ? p.tilt.a : 0, tb: p.tilt ? p.tilt.b : 0 })) });
     }, 500);
   });
   mp.peer.on('connection', (c) => {
@@ -1229,6 +1356,14 @@ function hostRoom(fixedCode) {
         p.shape = d.s;
       } else if (d.t === 'g') {
         p.tilt = { a: d.a, b: d.b };
+      } else if (d.t === 'pn') {
+        const nlen = SCALE.length;
+        const freq = SCALE[d.i % nlen] * (d.i >= nlen ? 2 : 1);
+        epiano(freq);
+        mp.ripples.push({ x: (d.i % nlen + 0.5) / nlen, y: d.i >= nlen ? 0.3 : 0.7, hue: p.hue, born: performance.now() });
+        bcast({ t: 'r', x: (d.i % nlen + 0.5) / nlen, y: d.i >= nlen ? 0.3 : 0.7, h: p.hue });
+      } else if (d.t === 'dp') {
+        p.drums = d.p.map(r => r.map(v => !!v));
       } else if (d.t === 'th') {
         setTheme(state.theme + 1);
       }
@@ -1261,6 +1396,7 @@ function joinRoom(code) {
         mp.ripples.push({ x: d.x, y: d.y, hue: d.h, born: performance.now() });
       } else if (d.t === 'st') {
         mp.sync = d;
+        mp.syncStep = { s: d.sp || 0, at: performance.now() };
         if (typeof d.th === 'number' && d.th !== state.theme) setTheme(d.th);
       }
     });
@@ -1613,6 +1749,66 @@ function goFullscreen() {
 
 const pointers = new Map();  // pointerId -> {x, y, sx, sy, t0, moved, lastNote}
 let fourFingerLock = false;
+const gesture = { max: 0, anyMoved: false, t0: 0 };
+
+// ============ INSTRUMENTOS EM LAYERS ============
+const IMODES = ['pincel', 'piano', 'drums'];
+let iMode = 'pincel';
+const myDrums = [0,1,2,3].map(() => Array(16).fill(false));
+const pianoFlash = new Map();   // keyIndex -> brilho
+let lastCell = null;
+
+function cycleInstrument() {
+  iMode = IMODES[(IMODES.indexOf(iMode) + 1) % IMODES.length];
+  showOverlayName(iMode.toUpperCase(), iMode === 'piano' ? 'toque as teclas · 3 dedos troca' : iMode === 'drums' ? 'pinte os passos · 3 dedos troca' : 'arraste pra pintar e tocar');
+  if (iMode !== 'pincel' && !synth.on && mp.role !== 'player') startSynth();
+}
+
+function showOverlayName(big, say) {
+  shapeNameEl.querySelector('.big').textContent = big;
+  shapeNameEl.querySelector('.say').textContent = say || '';
+  shapeNameEl.classList.add('show');
+  clearTimeout(nameTimer);
+  nameTimer = setTimeout(() => shapeNameEl.classList.remove('show'), 1500);
+}
+
+// geometria das UIs
+function pianoKeyAt(cx, cy) {
+  const cols = SCALE.length;
+  const col = Math.max(0, Math.min(cols - 1, Math.floor(cx / innerWidth * cols)));
+  const row = cy < innerHeight / 2 ? 1 : 0;   // metade de cima = oitava acima
+  return col + row * cols;
+}
+function drumCellAt(cx, cy) {
+  const gx = innerWidth * 0.06, gw = innerWidth * 0.88;
+  const gy = innerHeight * 0.22, gh = innerHeight * 0.56;
+  if (cx < gx || cx > gx + gw || cy < gy || cy > gy + gh) return null;
+  const col = Math.min(15, Math.floor((cx - gx) / gw * 16));
+  const row = Math.min(3, Math.floor((cy - gy) / gh * 4));
+  return { row, col };
+}
+
+function playPianoKey(idx) {
+  const nlen = SCALE.length;
+  const freq = SCALE[idx % nlen] * (idx >= nlen ? 2 : 1);
+  pianoFlash.set(idx, 1);
+  if (mp.role === 'player' && mp.conn && mp.conn.open) {
+    mp.conn.send({ t: 'pn', i: idx });
+  } else {
+    epiano(freq);
+  }
+}
+
+function touchDrumCell(cell, toggle) {
+  if (!cell) return;
+  const cur = myDrums[cell.row][cell.col];
+  if (toggle) myDrums[cell.row][cell.col] = !cur;
+  else if (!cur) myDrums[cell.row][cell.col] = true;
+  else return;
+  if (mp.role === 'player' && mp.conn && mp.conn.open) {
+    mp.conn.send({ t: 'dp', p: myDrums.map(r => r.map(v => v ? 1 : 0)) });
+  }
+}
 
 function localHue() {
   return state.gradient ? state.hue : rgbToHue(state.color);
@@ -1653,7 +1849,18 @@ cv.addEventListener('pointerdown', (e) => {
   enableMotion();  // permissão de giroscópio precisa de gesto (iOS)
   if (document.getElementById('qrBox').classList.contains('show')) hideQr();
   try { cv.setPointerCapture(e.pointerId); } catch(err) {}
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t0: performance.now(), moved: false, lastNote: -1 });
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t0: performance.now(), moved: false, lastNote: -1, key: -1 });
+  if (pointers.size === 1) { gesture.max = 1; gesture.anyMoved = false; gesture.t0 = performance.now(); }
+  else gesture.max = Math.max(gesture.max, pointers.size);
+  // instrumento responde no toque, não só no arrastar
+  if (iMode === 'piano' && pointers.size < 3) {
+    const p = pointers.get(e.pointerId);
+    p.key = pianoKeyAt(e.clientX, e.clientY);
+    playPianoKey(p.key);
+  } else if (iMode === 'drums' && pointers.size < 3) {
+    lastCell = drumCellAt(e.clientX, e.clientY);
+    touchDrumCell(lastCell, true);
+  }
   // 4 dedos = estética completamente nova (pra sala inteira)
   if (pointers.size >= 4 && !fourFingerLock) {
     fourFingerLock = true;
@@ -1676,17 +1883,31 @@ cv.addEventListener('pointermove', (e) => {
   const p = pointers.get(e.pointerId); if (!p) return;
   p.x = e.clientX; p.y = e.clientY;
   if (!p.moved && Math.hypot(p.x - p.sx, p.y - p.sy) < 8) return;
-  if (!p.moved) { p.moved = true; clearTimeout(holdTimer); }
+  if (!p.moved) { p.moved = true; gesture.anyMoved = true; clearTimeout(holdTimer); }
+  if (iMode === 'piano') {
+    const k = pianoKeyAt(p.x, p.y);
+    if (k !== p.key) { p.key = k; playPianoKey(k); }
+    return;
+  }
+  if (iMode === 'drums') {
+    const cell = drumCellAt(p.x, p.y);
+    if (cell && (!lastCell || cell.row !== lastCell.row || cell.col !== lastCell.col)) {
+      lastCell = cell;
+      touchDrumCell(cell, false);
+    }
+    return;
+  }
   fingerNote(p, e.pointerId);
 });
 
 function endPointer(e, allowTap) {
-  const p = pointers.get(e.pointerId);
-  clearTimeout(holdTimer);
-  const wasTap = allowTap && p && !p.moved && (performance.now() - p.t0) < 300 && pointers.size === 1;
   pointers.delete(e.pointerId);
+  clearTimeout(holdTimer);
   if (pointers.size < 2) fourFingerLock = false;
-  if (wasTap) {
+  if (pointers.size > 0 || !allowTap) return;
+  const dur = performance.now() - gesture.t0;
+  if (gesture.anyMoved || dur > 350) { gesture.max = 0; return; }
+  if (gesture.max === 1 && iMode === 'pincel') {
     goFullscreen();
     if (mp.role === 'player') {
       const cur = mp.myShape || SHAPES[0];
@@ -1699,7 +1920,10 @@ function endPointer(e, allowTap) {
       state.shape = SHAPES[(i + 1) % SHAPES.length];
       showShapeName(state.shape);
     }
+  } else if (gesture.max === 3) {
+    cycleInstrument();
   }
+  gesture.max = 0;
 }
 cv.addEventListener('pointerup', (e) => endPointer(e, true));
 cv.addEventListener('pointercancel', (e) => endPointer(e, false));
