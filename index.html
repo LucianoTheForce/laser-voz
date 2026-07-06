@@ -63,7 +63,7 @@
 <div id="help">
   tap = próxima forma · arrastar o dedo = tocar o synth (X nota · Y brilho) · F fullscreen<br>
   fale: túnel · círculo · onda · estrela · feixes · espiral · grade · scan · lissajous · <b>modo texto</b> ("modo formas" sai)<br>
-  verde azul vermelho branco roxo ciano rosa amarelo · mais rápido · devagar · maior · menor · gira · para · limpa · aleatório · liga o som · para o som · mais alto · mais baixo
+  <b>gradiente</b> (cores girando com o som) · verde azul vermelho branco roxo ciano rosa amarelo (cor fixa) · mais rápido · devagar · maior · menor · gira · para · limpa · aleatório · liga o som · para o som · mais alto · mais baixo
 </div>
 
 <div id="hud">
@@ -79,7 +79,9 @@
 // ============ ESTADO ============
 const state = {
   shape: 'tunel',
-  color: [0, 255, 80],      // rgb
+  color: [0, 255, 80],      // rgb (cor fixa)
+  gradient: true,           // gradiente colorido áudio-reativo
+  hue: 120,
   speed: 1,
   scale: 1,
   spin: 0,                  // rad/s extra
@@ -145,17 +147,37 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
+// gradiente colorido áudio-reativo: gira com o tempo, grave desloca o matiz
+function grad(alpha, light) {
+  const a = state.t * 0.4;
+  const r = Math.max(W, H);
+  const x2 = CX + Math.cos(a)*r, y2 = CY + Math.sin(a)*r;
+  const g = ctx.createLinearGradient(CX*2 - x2, CY*2 - y2, x2, y2);
+  const sat = 90 + audio.smooth * 10;
+  const shift = audio.bass * 90;
+  for (let i = 0; i <= 3; i++) {
+    g.addColorStop(i/3, `hsla(${(state.hue + shift + i*90) % 360},${sat}%,${light}%,${alpha})`);
+  }
+  return g;
+}
+
 // traço laser: passada larga translúcida (halo) + passada fina sólida
 function laserStroke(path, alpha = 1) {
-  const [r,g,b] = state.color;
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
-  ctx.lineWidth = 10; ctx.stroke(path);
-  ctx.strokeStyle = `rgba(${r},${g},${b},${0.35*alpha})`;
-  ctx.lineWidth = 4; ctx.stroke(path);
-  ctx.strokeStyle = `rgba(${Math.min(r+120,255)},${Math.min(g+120,255)},${Math.min(b+120,255)},${alpha})`;
-  ctx.lineWidth = 1.4; ctx.stroke(path);
+  if (state.gradient) {
+    ctx.strokeStyle = grad(0.12*alpha, 55); ctx.lineWidth = 10; ctx.stroke(path);
+    ctx.strokeStyle = grad(0.35*alpha, 62); ctx.lineWidth = 4;  ctx.stroke(path);
+    ctx.strokeStyle = grad(alpha, 82);      ctx.lineWidth = 1.4; ctx.stroke(path);
+  } else {
+    const [r,g,b] = state.color;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
+    ctx.lineWidth = 10; ctx.stroke(path);
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.35*alpha})`;
+    ctx.lineWidth = 4; ctx.stroke(path);
+    ctx.strokeStyle = `rgba(${Math.min(r+120,255)},${Math.min(g+120,255)},${Math.min(b+120,255)},${alpha})`;
+    ctx.lineWidth = 1.4; ctx.stroke(path);
+  }
   ctx.globalCompositeOperation = 'source-over';
 }
 
@@ -164,17 +186,26 @@ const R = () => Math.min(W,H) * 0.38 * state.scale * (1 + audio.smooth * 0.7);
 
 // texto com traço laser (halo + núcleo)
 function laserText(text, x, y, px, alpha = 1) {
-  const [r,g,b] = state.color;
   ctx.font = `700 ${px}px ui-monospace, 'SF Mono', Menlo, monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   ctx.globalCompositeOperation = 'lighter';
-  ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
-  ctx.lineWidth = Math.max(px*0.12, 6); ctx.strokeText(text, x, y);
-  ctx.strokeStyle = `rgba(${r},${g},${b},${0.35*alpha})`;
-  ctx.lineWidth = Math.max(px*0.045, 2.5); ctx.strokeText(text, x, y);
-  ctx.strokeStyle = `rgba(${Math.min(r+120,255)},${Math.min(g+120,255)},${Math.min(b+120,255)},${alpha})`;
-  ctx.lineWidth = Math.max(px*0.018, 1.2); ctx.strokeText(text, x, y);
+  if (state.gradient) {
+    ctx.strokeStyle = grad(0.12*alpha, 55);
+    ctx.lineWidth = Math.max(px*0.12, 6); ctx.strokeText(text, x, y);
+    ctx.strokeStyle = grad(0.35*alpha, 62);
+    ctx.lineWidth = Math.max(px*0.045, 2.5); ctx.strokeText(text, x, y);
+    ctx.strokeStyle = grad(alpha, 82);
+    ctx.lineWidth = Math.max(px*0.018, 1.2); ctx.strokeText(text, x, y);
+  } else {
+    const [r,g,b] = state.color;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.12*alpha})`;
+    ctx.lineWidth = Math.max(px*0.12, 6); ctx.strokeText(text, x, y);
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.35*alpha})`;
+    ctx.lineWidth = Math.max(px*0.045, 2.5); ctx.strokeText(text, x, y);
+    ctx.strokeStyle = `rgba(${Math.min(r+120,255)},${Math.min(g+120,255)},${Math.min(b+120,255)},${alpha})`;
+    ctx.lineWidth = Math.max(px*0.018, 1.2); ctx.strokeText(text, x, y);
+  }
   ctx.globalCompositeOperation = 'source-over';
 }
 
@@ -345,6 +376,8 @@ function frame(now) {
   }
 
   if (state.running) state.t += dt * state.speed * (1 + audio.smooth * 1.2);
+  // gradiente gira: base lenta, áudio empurra
+  state.hue = (state.hue + dt * (18 + audio.smooth * 220 + audio.bass * 120)) % 360;
   ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = '#000';
   ctx.fillRect(0,0,W,H);
@@ -368,8 +401,7 @@ function frame(now) {
 
   // barrinha de nível (só quando HUD visível)
   if (audio.on && !hud.classList.contains('hidden')) {
-    const [r,g,b] = state.color;
-    ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
+    ctx.fillStyle = state.gradient ? `hsla(${state.hue},95%,60%,0.9)` : `rgba(${state.color[0]},${state.color[1]},${state.color[2]},0.9)`;
     ctx.fillRect(20, H - 26, audio.level * 200 * (window.devicePixelRatio||1), 6);
   }
   requestAnimationFrame(frame);
@@ -398,8 +430,9 @@ function applyCommand(text) {
     if (t.includes(word)) { state.shape = shape; showShapeName(shape); hit = true; break; }
   }
   for (const [name, rgb] of Object.entries(COLORS)) {
-    if (t.includes(name)) { state.color = rgb; hit = true; }
+    if (t.includes(name)) { state.color = rgb; state.gradient = false; hit = true; }
   }
+  if (/gradiente|arco.?[íi]ris|colorido|rainbow|todas as cores/.test(t)) { state.gradient = true; hit = true; }
   if (/mais r[aá]pid|acelera|r[aá]pido/.test(t)) { state.speed = Math.min(state.speed*1.6, 8); hit = true; }
   if (/devagar|mais lent|lento|calma/.test(t))   { state.speed = Math.max(state.speed/1.6, 0.1); hit = true; }
   if (/maior|aumenta|grande/.test(t))            { state.scale = Math.min(state.scale*1.3, 3); hit = true; }
