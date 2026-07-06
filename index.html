@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 <title>LASER VOZ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
@@ -19,12 +20,17 @@
     transition: opacity .6s ease; z-index: 10; cursor: default;
   }
   #hud.hidden { opacity: 0; pointer-events: none; }
-  #micBtn, #synthBtn, #fsBtn {
+  #micBtn, #synthBtn, #fsBtn, #hostBtn {
     background: #000; color: #fff; border: 1px solid #333;
     padding: 14px 28px; font-family: inherit; font-size: 13px;
     letter-spacing: 3px; cursor: pointer; text-transform: uppercase;
   }
-  #micBtn.on, #synthBtn.on { border-color: #0f0; color: #0f0; }
+  #micBtn.on, #synthBtn.on, #hostBtn.on { border-color: #0f0; color: #0f0; }
+  #joinInput {
+    background: #000; border: 1px solid #222; color: #fff;
+    font-family: inherit; font-size: 12px; padding: 8px 12px; width: 320px;
+    letter-spacing: 2px; outline: none; text-align: center; text-transform: uppercase;
+  }
   #status { color: #444; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
   #lastCmd { color: #888; font-size: 12px; letter-spacing: 1px; min-height: 16px; }
   #txt {
@@ -68,6 +74,9 @@
 
 <div id="hud">
   <div id="lastCmd"></div>
+  <div id="roomEl" style="color:#0f0;font-size:14px;letter-spacing:4px"></div>
+  <button id="hostBtn">📺 criar sala (telão)</button>
+  <input id="joinInput" placeholder="código da sala + enter (entrar como controle)" />
   <button id="fsBtn">⛶ tela cheia</button>
   <button id="synthBtn">🔊 ligar synth</button>
   <button id="micBtn">🎙 ativar mic (voz + áudio-reativo)</button>
@@ -163,11 +172,19 @@ function grad(alpha, light) {
   return g;
 }
 
+// cor forçada por player (multiplayer): hue fixo por jogador
+let overrideHue = null;
+
 // traço laser: passada larga translúcida (halo) + passada fina sólida
 function laserStroke(path, alpha = 1) {
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  if (state.gradient) {
+  if (overrideHue !== null) {
+    const h = overrideHue;
+    ctx.strokeStyle = `hsla(${h},95%,55%,${0.12*alpha})`; ctx.lineWidth = 10;  ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},95%,60%,${0.35*alpha})`; ctx.lineWidth = 4;   ctx.stroke(path);
+    ctx.strokeStyle = `hsla(${h},95%,85%,${alpha})`;      ctx.lineWidth = 1.4; ctx.stroke(path);
+  } else if (state.gradient) {
     ctx.strokeStyle = grad(0.12*alpha, 55); ctx.lineWidth = 10; ctx.stroke(path);
     ctx.strokeStyle = grad(0.35*alpha, 62); ctx.lineWidth = 4;  ctx.stroke(path);
     ctx.strokeStyle = grad(alpha, 82);      ctx.lineWidth = 1.4; ctx.stroke(path);
@@ -384,6 +401,26 @@ function frame(now) {
   ctx.fillStyle = '#000';
   ctx.fillRect(0,0,W,H);
   (draw[state.shape] || draw.tunel)(state.t);
+
+  // telão: camada visual de cada player com a cor dele
+  if (mp.role === 'host') {
+    for (const id in mp.players) {
+      const p = mp.players[id];
+      overrideHue = p.hue;
+      (draw[p.shape] || draw.circulo)(state.t + p.idx * 0.9);
+      overrideHue = null;
+    }
+    const now = performance.now();
+    mp.ripples = mp.ripples.filter(r => now - r.born < 900);
+    for (const r of mp.ripples) {
+      const f = (now - r.born) / 900;
+      overrideHue = r.hue;
+      const rp = new Path2D();
+      rp.arc(r.x * W, r.y * H, f * Math.min(W,H) * 0.3 + 10 * (window.devicePixelRatio||1), 0, Math.PI*2);
+      laserStroke(rp, 1 - f);
+      overrideHue = null;
+    }
+  }
 
   // sincroniza o timbre do synth com a forma atual
   if (state.shape !== frame.lastShape) { applyPatch(state.shape); frame.lastShape = state.shape; }
@@ -681,6 +718,86 @@ function startSeq() {
   }, stepMs());
 }
 
+// ============ MULTIPLAYER (PeerJS, P2P) ============
+// telão = host (renderiza tudo + synth na caixa) · celulares = controles
+const mp = { role: null, peer: null, code: null, players: {}, conn: null, idx: 0, hue: null, nextIdx: 1, ripples: [] };
+const WAVES = ['sawtooth', 'square', 'triangle', 'sine'];
+
+function randCode() {
+  const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s = '';
+  for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
+}
+
+function hueToRgb(h) {
+  const f = (n) => {
+    const k = (n + h/30) % 12, l = 0.55, a = Math.min(l, 1-l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k-3, 9-k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+function hostRoom() {
+  if (mp.peer || typeof Peer === 'undefined') return;
+  const code = randCode();
+  mp.peer = new Peer('laservoz-' + code);
+  mp.peer.on('open', () => {
+    mp.role = 'host'; mp.code = code;
+    roomEl.textContent = 'SALA: ' + code;
+    hostBtn.classList.add('on');
+    hostBtn.textContent = '📺 sala ' + code;
+    statusEl.textContent = 'celulares: abrir o mesmo link e entrar com o código';
+    if (!synth.on) startSynth();
+  });
+  mp.peer.on('connection', (c) => {
+    c.on('open', () => {
+      const idx = mp.nextIdx++;
+      const hue = (idx * 67) % 360;
+      mp.players[c.peer] = { idx, hue, shape: SHAPES[idx % (SHAPES.length - 1)], conn: c };
+      c.send({ t: 'hi', idx, hue });
+      statusEl.textContent = 'player ' + idx + ' entrou';
+    });
+    c.on('data', (d) => {
+      const p = mp.players[c.peer]; if (!p || !d) return;
+      if (d.t === 'n') {
+        const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
+        const cut = 400 + (1 - d.y) * 5000;
+        playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.35, gain: 0.26, cut });
+        mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
+      } else if (d.t === 's') {
+        p.shape = d.s;
+      }
+    });
+    c.on('close', () => { delete mp.players[c.peer]; });
+  });
+  mp.peer.on('error', (e) => { statusEl.textContent = 'erro sala: ' + e.type; });
+}
+
+function joinRoom(code) {
+  if (mp.peer || typeof Peer === 'undefined') return;
+  mp.peer = new Peer();
+  mp.peer.on('open', () => {
+    mp.conn = mp.peer.connect('laservoz-' + code.toUpperCase(), { reliable: false });
+    mp.conn.on('open', () => {
+      mp.role = 'player';
+      roomEl.textContent = 'SALA ' + code.toUpperCase();
+      statusEl.textContent = 'conectado · arraste pra tocar, tap troca sua forma';
+      scheduleHide();
+    });
+    mp.conn.on('data', (d) => {
+      if (d && d.t === 'hi') {
+        mp.idx = d.idx; mp.hue = d.hue;
+        state.gradient = false;
+        state.color = hueToRgb(d.hue);
+        state.shape = SHAPES[d.idx % (SHAPES.length - 1)];
+        roomEl.textContent = 'SALA ' + code.toUpperCase() + ' · PLAYER ' + d.idx;
+      }
+    });
+    mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
+  });
+  mp.peer.on('error', (e) => { statusEl.textContent = 'erro: ' + e.type + ' (código certo?)'; });
+}
+
 // roteia transcrição (parcial ou final) pra legenda ou comandos
 function handleTranscript(text, isFinal) {
   if (!text) return;
@@ -790,6 +907,17 @@ micBtn.onclick = () => listening ? stopVoice() : startVoice();
 const synthBtn = document.getElementById('synthBtn');
 synthBtn.onclick = () => synth.on ? stopSynth() : startSynth();
 const fsBtn = document.getElementById('fsBtn');
+const roomEl = document.getElementById('roomEl');
+const hostBtn = document.getElementById('hostBtn');
+const joinInput = document.getElementById('joinInput');
+hostBtn.onclick = () => hostRoom();
+joinInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && joinInput.value.trim().length >= 4) {
+    joinRoom(joinInput.value.trim());
+    joinInput.blur();
+  }
+  e.stopPropagation();
+});
 fsBtn.onclick = () => {
   const el = document.documentElement;
   const fn = el.requestFullscreen || el.webkitRequestFullscreen;
@@ -838,7 +966,8 @@ let hideTimer;
 function scheduleHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (document.activeElement !== txt && document.activeElement !== dgKeyInput) hud.classList.add('hidden');
+    const a = document.activeElement;
+    if (a !== txt && a !== dgKeyInput && a !== joinInput) hud.classList.add('hidden');
   }, 4000);
 }
 function showHud() {
@@ -879,11 +1008,13 @@ cv.addEventListener('pointermove', (e) => {
   touch.x = e.clientX; touch.y = e.clientY;
   if (!touch.moved && Math.hypot(dx,dy) < 4) return;
   touch.moved = true;
-  if (synth.on) {
-    // X = nota na escala, Y = brilho do filtro
-    const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(e.clientX / innerWidth * SCALE.length)));
-    if (idx !== touch.lastNote) {
-      touch.lastNote = idx;
+  const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(e.clientX / innerWidth * SCALE.length)));
+  if (idx !== touch.lastNote) {
+    touch.lastNote = idx;
+    if (mp.role === 'player' && mp.conn && mp.conn.open) {
+      mp.conn.send({ t: 'n', x: e.clientX / innerWidth, y: e.clientY / innerHeight });
+      touch.glow = 1;
+    } else if (synth.on) {
       const cut = 400 + (1 - e.clientY / innerHeight) * 5000;
       playNote(SCALE[idx], { dur: 0.35, gain: 0.28, cut });
       touch.glow = 1;
@@ -899,6 +1030,7 @@ cv.addEventListener('pointerup', (e) => {
     const i = SHAPES.indexOf(state.shape);
     state.shape = SHAPES[(i + 1) % SHAPES.length];
     showShapeName(state.shape);
+    if (mp.role === 'player' && mp.conn && mp.conn.open) mp.conn.send({ t: 's', s: state.shape });
   }
 });
 cv.addEventListener('pointercancel', () => { touch.down = false; });
@@ -907,7 +1039,8 @@ cv.addEventListener('pointercancel', () => { touch.down = false; });
 showShapeName(state.shape);
 
 addEventListener('keydown', (e) => {
-  if (document.activeElement === txt || document.activeElement === dgKeyInput) return;
+  const a = document.activeElement;
+  if (a === txt || a === dgKeyInput || a === joinInput) return;
   if (e.key === 'f' || e.key === 'F') {
     document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
   }
