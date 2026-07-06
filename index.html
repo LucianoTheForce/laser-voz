@@ -831,6 +831,14 @@ function showQr() {
 }
 function hideQr() { document.getElementById('qrBox').classList.remove('show'); }
 
+function bcast(msg, exceptPeer) {
+  for (const id in mp.players) {
+    if (id === exceptPeer) continue;
+    const c = mp.players[id].conn;
+    if (c && c.open) { try { c.send(msg); } catch(e) {} }
+  }
+}
+
 function hostRoom(fixedCode) {
   if (mp.peer || typeof Peer === 'undefined') return;
   const code = (fixedCode || randCode()).toUpperCase();
@@ -859,6 +867,7 @@ function hostRoom(fixedCode) {
       if (d.t === 'm') {
         // movimento contínuo = pincelada; nota toca quando muda de "tecla"
         brushPoint('p' + p.idx, d.x, d.y, p.hue);
+        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue }, c.peer);
         const i = Math.max(0, Math.min(SCALE.length-1, Math.round(d.x * (SCALE.length-1))));
         if (i !== p.lastNote) {
           p.lastNote = i;
@@ -872,6 +881,7 @@ function hostRoom(fixedCode) {
         playNote(SCALE[i] * (p.idx % 2 ? 2 : 1), { wave: WAVES[p.idx % WAVES.length], dur: 0.35, gain: 0.26, cut });
         mp.ripples.push({ x: d.x, y: d.y, hue: p.hue, born: performance.now() });
         brushPoint('p' + p.idx, d.x, d.y, p.hue);
+        bcast({ t: 'b', k: 'p' + p.idx, x: d.x, y: d.y, h: p.hue }, c.peer);
       } else if (d.t === 's') {
         p.shape = d.s;
       }
@@ -899,6 +909,9 @@ function joinRoom(code) {
         state.color = hueToRgb(d.hue);
         state.shape = SHAPES[d.idx % (SHAPES.length - 1)];
         roomEl.textContent = 'SALA ' + code.toUpperCase() + ' · PLAYER ' + d.idx;
+      } else if (d && d.t === 'b') {
+        // pincelada de outra pessoa (retransmitida pelo telão)
+        brushPoint(d.k, d.x, d.y, d.h);
       }
     });
     mp.conn.on('close', () => { statusEl.textContent = 'desconectado do telão'; });
@@ -1128,6 +1141,13 @@ function fingerNote(p, pid) {
   }
   // host / solo: pincelada + nota
   brushPoint('l' + pid, nx, ny, localHue());
+  if (mp.role === 'host') {
+    const now = performance.now();
+    if (!p.lastBcast || now - p.lastBcast > 40) {
+      p.lastBcast = now;
+      bcast({ t: 'b', k: 'l' + pid, x: nx, y: ny, h: localHue() });
+    }
+  }
   const idx = Math.max(0, Math.min(SCALE.length-1, Math.floor(nx * SCALE.length)));
   if (idx === p.lastNote) return;
   p.lastNote = idx;
